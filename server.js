@@ -427,11 +427,23 @@ app.post('/api/analyze', upload.array('photos', 10), async (req, res) => {
       report = { rawResponse: raw, overallStatus: 'FAIL', riskLevel: 'MEDIUM', findings: [`AI ตอบกลับแต่ parse JSON ไม่สำเร็จ: ${parseErr.message}`] };
     }
 
-    res.json({ success: true, report, photoFiles: uploadedFiles.map(f => f.filename) });
+    res.json({
+      success: true,
+      report,
+      photoFiles: uploadedFiles.map(f => path.relative(UPLOADS_DIR, f.path).replace(/\\/g, '/'))
+    });
   } catch (err) {
     // Keep uploaded files so they can be referenced after manual save
     res.status(500).json({ error: err.message });
   }
+});
+
+// Upload photos only (no AI) — for save-without-analyze
+app.post('/api/upload-photos', upload.array('photos', 10), (req, res) => {
+  const files = req.files || [];
+  res.json({
+    photoFiles: files.map(f => path.relative(UPLOADS_DIR, f.path).replace(/\\/g, '/'))
+  });
 });
 
 // LINE Messaging API — push message

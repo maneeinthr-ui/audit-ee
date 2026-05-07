@@ -400,9 +400,14 @@ body{background:var(--bg);color:var(--txt);font-family:'Segoe UI',sans-serif;dis
         <div id="photoCount" style="font-size:.75rem;color:var(--muted);margin-top:8px">0 รูป</div>
       </div>
     </div>
-    <div style="display:flex;justify-content:space-between;margin-top:16px">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-top:16px">
       <button class="btn btn-ghost" onclick="goStep(2)"><i class="fa-solid fa-arrow-left"></i> ย้อนกลับ</button>
-      <button class="btn btn-primary" onclick="goStep(4)">ไปยัง AI วิเคราะห์ <i class="fa-solid fa-robot"></i></button>
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <button class="btn btn-ghost" onclick="saveWithoutAI()" style="border-color:rgba(251,191,36,.5);color:#fbbf24">
+          <i class="fa-solid fa-floppy-disk"></i> บันทึก (ไม่วิเคราะห์)
+        </button>
+        <button class="btn btn-primary" onclick="goStep(4)">ไปยัง AI วิเคราะห์ <i class="fa-solid fa-robot"></i></button>
+      </div>
     </div>
   </div>
 
@@ -1160,9 +1165,45 @@ function renderAIReport(r) {
   toast('วิเคราะห์เสร็จสิ้น — ' + (overallOk ? 'PASS ✅' : 'FAIL ❌ กรุณาตรวจสอบจุดบกพร่อง'), overallOk ? 'ok' : 'err');
 }
 
+async function saveWithoutAI() {
+  collectStep(2); // collect PPE + photos step data
+  const f = App.form;
+  if (!f.technicianName || !f.codeId) { toast('กรุณากรอกข้อมูลช่างและรหัสป้ายก่อน', 'err'); return; }
+  try {
+    // Upload photos if any (no AI)
+    let photoFiles = f.savedPhotoFiles || [];
+    if (f.photos && f.photos.length > 0 && photoFiles.length === 0) {
+      toast('กำลังอัพโหลดรูป...', 'ok');
+      const fd = new FormData();
+      f.photos.forEach(p => fd.append('photos', p));
+      const uRes = await fetch('/api/upload-photos', { method: 'POST', body: fd });
+      const uData = await uRes.json();
+      photoFiles = uData.photoFiles || [];
+      f.savedPhotoFiles = photoFiles;
+    }
+    const payload = {
+      codeId: f.codeId,
+      locationInfo: f.locationInfo,
+      technicianName: f.technicianName,
+      technicianId: f.technicianId,
+      date: f.date,
+      gps: f.gps,
+      measurements: f.measurements,
+      mdbChecklist: f.mdbChecklist,
+      ppeChecklist: f.ppeChecklist,
+      photoFiles,
+      aiReport: null,
+      overallStatus: 'PENDING'
+    };
+    const rec = await api('POST', '/api/inspections', payload);
+    App.savedInspectionId = rec.id;
+    toast('✅ บันทึกสำเร็จ (รอวิเคราะห์ AI) — รหัส: ' + rec.id, 'ok');
+    setTimeout(() => { if (confirm('บันทึกแล้ว ต้องการตรวจสอบใหม่หรือไม่?')) resetForm(); }, 1200);
+  } catch (e) { toast('บันทึกไม่สำเร็จ: ' + e.message, 'err'); }
+}
+
 async function saveInspection() {
   const f = App.form;
-  if (!f.aiReport) { toast('กรุณาวิเคราะห์ด้วย AI ก่อนบันทึก', 'err'); return; }
   try {
     const payload = {
       codeId: f.codeId,
@@ -1175,13 +1216,14 @@ async function saveInspection() {
       mdbChecklist: f.mdbChecklist,
       ppeChecklist: f.ppeChecklist,
       photoFiles: f.savedPhotoFiles,
-      aiReport: f.aiReport,
-      overallStatus: f.aiReport.overallStatus
+      aiReport: f.aiReport || null,
+      overallStatus: f.aiReport?.overallStatus || 'PENDING'
     };
     const rec = await api('POST', '/api/inspections', payload);
     App.savedInspectionId = rec.id;
     toast('บันทึกรายงานสำเร็จ — รหัส: ' + rec.id, 'ok');
-    document.getElementById('lineBtn').disabled = false;
+    const lineBtn = document.getElementById('lineBtn');
+    if (lineBtn) lineBtn.disabled = false;
   } catch (e) { toast('บันทึกไม่สำเร็จ: ' + e.message, 'err'); }
 }
 
