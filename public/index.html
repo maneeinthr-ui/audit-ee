@@ -400,14 +400,9 @@ body{background:var(--bg);color:var(--txt);font-family:'Segoe UI',sans-serif;dis
         <div id="photoCount" style="font-size:.75rem;color:var(--muted);margin-top:8px">0 รูป</div>
       </div>
     </div>
-    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-top:16px">
+    <div style="display:flex;justify-content:space-between;margin-top:16px">
       <button class="btn btn-ghost" onclick="goStep(2)"><i class="fa-solid fa-arrow-left"></i> ย้อนกลับ</button>
-      <div style="display:flex;gap:10px;flex-wrap:wrap">
-        <button class="btn btn-ghost" onclick="saveWithoutAI()" style="border-color:rgba(251,191,36,.5);color:#fbbf24">
-          <i class="fa-solid fa-floppy-disk"></i> บันทึก (ไม่วิเคราะห์)
-        </button>
-        <button class="btn btn-primary" onclick="goStep(4)">ไปยัง AI วิเคราะห์ <i class="fa-solid fa-robot"></i></button>
-      </div>
+      <button class="btn btn-primary" onclick="goStep(4)">ไปยัง AI วิเคราะห์ <i class="fa-solid fa-robot"></i></button>
     </div>
   </div>
 
