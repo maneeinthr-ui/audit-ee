@@ -620,6 +620,12 @@ body{background:var(--bg);color:var(--txt);font-family:'Segoe UI',sans-serif;dis
       <input class="inp" id="sEngLicense" placeholder="ก.ว. XXXXX" style="margin-bottom:10px">
       <label class="inp-label">บริษัท</label>
       <input class="inp" id="sCompany" placeholder="Plan B Media" style="margin-bottom:10px">
+      <div style="background:rgba(251,191,36,.08);border:1px solid rgba(251,191,36,.3);border-radius:8px;padding:12px;margin-top:6px">
+        <div style="font-size:.8rem;font-weight:600;color:#fbbf24;margin-bottom:8px"><i class="fa-solid fa-lock"></i> PIN ป้องกันการวิเคราะห์ AI (เฉพาะวิศวกร)</div>
+        <label class="inp-label">PIN 4-8 หลัก (ว่าง = ไม่ล็อก)</label>
+        <input class="inp" type="password" id="sAdminPin" placeholder="ตั้ง PIN เพื่อป้องกันค่าใช้จ่าย AI">
+        <p style="font-size:.72rem;color:var(--muted);margin-top:4px">ช่างจะกรอกฟอร์มได้ปกติ แต่กด "วิเคราะห์ AI" ต้องใส่ PIN นี้ก่อน</p>
+      </div>
     </div>
     <!-- Google Sheets -->
     <div class="card" style="grid-column:1/-1">
@@ -1046,6 +1052,16 @@ function buildPreSummary() {
 
 async function runAnalysis() {
   collectStep(2);
+
+  // PIN check — if adminPin is set, ask before proceeding
+  const settings = App.settings || {};
+  let pinValue = '';
+  if (settings.adminPin) {
+    const pin = prompt('🔒 ใส่ PIN วิศวกร เพื่อวิเคราะห์ด้วย AI:');
+    if (pin === null) return; // user cancelled
+    pinValue = pin;
+  }
+
   const f = App.form;
   const btn = document.getElementById('analyzeBtn');
   const loading = document.getElementById('analyzeLoading');
@@ -1074,6 +1090,7 @@ async function runAnalysis() {
       ppeChecklist: f.ppeChecklist,
       mdbChecklist: f.mdbChecklist
     }));
+    if (pinValue) fd.append('adminPin', pinValue);
     f.photos.forEach(photo => fd.append('photos', photo));
 
     const res = await fetch('/api/analyze', { method: 'POST', body: fd });
@@ -1450,9 +1467,11 @@ async function saveSettings() {
     lineChannelToken: document.getElementById('sLineToken').value,
     lineTargetId: document.getElementById('sLineTargetId').value,
     columnMapping: mapping,
-    anthropicKey: document.getElementById('sAnthropicKey').value || undefined
+    anthropicKey: document.getElementById('sAnthropicKey').value || undefined,
+    adminPin: document.getElementById('sAdminPin').value || undefined
   };
   if (!body.anthropicKey) delete body.anthropicKey;
+  if (!body.adminPin) delete body.adminPin;
   try {
     await api('PUT', '/api/settings', body);
     toast('บันทึก Settings สำเร็จ', 'ok');

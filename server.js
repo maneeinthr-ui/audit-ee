@@ -15,11 +15,20 @@ const PORT = process.env.PORT || 3000;
 // ─── directories ──────────────────────────────────────────────────────────────
 const DATA_DIR = path.join(__dirname, 'data');
 const UPLOADS_DIR = path.join(__dirname, 'uploads');
+const EXPORTS_DIR = path.join(__dirname, 'exports');
 const PUBLIC_DIR = path.join(__dirname, 'public');
 
-[DATA_DIR, UPLOADS_DIR, PUBLIC_DIR].forEach(d => {
+[DATA_DIR, UPLOADS_DIR, EXPORTS_DIR, PUBLIC_DIR].forEach(d => {
   if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true });
 });
+
+function getTodayFolder() {
+  const d = new Date();
+  const dateStr = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  const folder = path.join(UPLOADS_DIR, dateStr);
+  if (!fs.existsSync(folder)) fs.mkdirSync(folder, { recursive: true });
+  return folder;
+}
 
 const DEFAULT_SETTINGS = {
   engineerName: 'วิศวกรไฟฟ้า',
@@ -48,7 +57,7 @@ app.use('/uploads', express.static(UPLOADS_DIR));
 
 // ─── multer ────────────────────────────────────────────────────────────────────
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, UPLOADS_DIR),
+  destination: (req, file, cb) => cb(null, getTodayFolder()),
   filename: (req, file, cb) => {
     const ext = path.extname(file.originalname).toLowerCase() || '.jpg';
     cb(null, `${Date.now()}-${uuidv4().slice(0, 8)}${ext}`);
@@ -347,6 +356,17 @@ app.delete('/api/inspections/:id', (req, res) => {
 app.post('/api/analyze', upload.array('photos', 10), async (req, res) => {
   const uploadedFiles = req.files || [];
   try {
+    // PIN protection — only engineer can trigger AI analysis
+    const settings = readJSON('settings.json');
+    const adminPin = settings.adminPin || '';
+    if (adminPin) {
+      const submittedPin = req.body.adminPin || '';
+      if (submittedPin !== adminPin) {
+        uploadedFiles.forEach(f => { try { fs.unlinkSync(f.path); } catch(_){} });
+        return res.status(403).json({ error: 'PIN ไม่ถูกต้อง — เฉพาะวิศวกรเท่านั้นที่วิเคราะห์ได้' });
+      }
+    }
+
     const client = getAnthropic();
     const inspData = JSON.parse(req.body.inspectionData || '{}');
     inspData.photoCount = uploadedFiles.length;
@@ -656,8 +676,18 @@ app.get('/api/export/excel', async (req, res) => {
     r.getCell('fail').font = s.fail > 0 ? { color: { argb: 'FFB91C1C' }, bold: true } : {};
   });
 
+  const dateStr = new Date().toISOString().slice(0,10);
+  const fileName = `AuditEE-${dateStr}.xlsx`;
+
+  // Save a copy to local exports/ folder
+  try {
+    const localPath = path.join(EXPORTS_DIR, fileName);
+    await wb.xlsx.writeFile(localPath);
+    console.log(`[EXPORT] Saved to ${localPath}`);
+  } catch (e) { console.warn('[EXPORT] Could not save local copy:', e.message); }
+
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-  res.setHeader('Content-Disposition', `attachment; filename="AuditEE-${new Date().toISOString().slice(0,10)}.xlsx"`);
+  res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
   await wb.xlsx.write(res);
   res.end();
 });
