@@ -696,16 +696,19 @@ app.get('/api/export/excel', async (req, res) => {
   const dateStr = new Date().toISOString().slice(0,10);
   const fileName = `AuditEE-${dateStr}.xlsx`;
 
-  // Save a copy to local exports/ folder
+  // Generate buffer once — use for both local save AND response
+  const buffer = await wb.xlsx.writeBuffer();
+
+  // Save a copy to local export/ folder
   try {
     const localPath = path.join(EXPORTS_DIR, fileName);
-    await wb.xlsx.writeFile(localPath);
-    console.log(`[EXPORT] Saved to ${localPath}`);
-  } catch (e) { console.warn('[EXPORT] Could not save local copy:', e.message); }
+    fs.writeFileSync(localPath, buffer);
+    console.log(`[EXPORT] Saved local copy → ${localPath}`);
+  } catch (e) { console.warn('[EXPORT] Local save failed:', e.message); }
 
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
-  await wb.xlsx.write(res);
+  res.send(buffer);
   res.end();
 });
 
