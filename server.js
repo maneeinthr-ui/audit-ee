@@ -15,17 +15,21 @@ const PORT = process.env.PORT || 3000;
 // ─── directories ──────────────────────────────────────────────────────────────
 const DATA_DIR = path.join(__dirname, 'data');
 const UPLOADS_DIR = path.join(__dirname, 'uploads');
-const EXPORTS_DIR = path.join(__dirname, 'exports');
+const EXPORTS_DIR = path.join(__dirname, 'export');
 const PUBLIC_DIR = path.join(__dirname, 'public');
 
 [DATA_DIR, UPLOADS_DIR, EXPORTS_DIR, PUBLIC_DIR].forEach(d => {
   if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true });
 });
 
-function getTodayFolder() {
+function getTodayFolder(techName) {
   const d = new Date();
   const dateStr = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-  const folder = path.join(UPLOADS_DIR, dateStr);
+  // Sanitize techName — remove path-unsafe characters
+  const safeTech = techName ? String(techName).replace(/[\/\\:*?"<>|]/g, '').trim() : '';
+  const folder = safeTech
+    ? path.join(UPLOADS_DIR, dateStr, safeTech)
+    : path.join(UPLOADS_DIR, dateStr);
   if (!fs.existsSync(folder)) fs.mkdirSync(folder, { recursive: true });
   return folder;
 }
@@ -57,7 +61,8 @@ app.use('/uploads', express.static(UPLOADS_DIR));
 
 // ─── multer ────────────────────────────────────────────────────────────────────
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, getTodayFolder()),
+  // req.body.techName is available here because it's appended BEFORE photos in FormData
+  destination: (req, file, cb) => cb(null, getTodayFolder(req.body.techName)),
   filename: (req, file, cb) => {
     const ext = path.extname(file.originalname).toLowerCase() || '.jpg';
     cb(null, `${Date.now()}-${uuidv4().slice(0, 8)}${ext}`);

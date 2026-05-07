@@ -413,18 +413,44 @@ body{background:var(--bg);color:var(--txt);font-family:'Segoe UI',sans-serif;dis
 
   <!-- Step 4: AI Analysis -->
   <div id="step-4" style="display:none">
-    <!-- Summary before analyze -->
+    <!-- Score + Decision Card -->
     <div class="card" style="margin-bottom:16px" id="step4Summary">
-      <div style="font-size:.9rem;font-weight:600;margin-bottom:14px;color:#93c5fd"><i class="fa-solid fa-robot"></i> AI วิเคราะห์ด้วย Claude Vision</div>
-      <div id="preSummary" style="font-size:.82rem;color:var(--muted);margin-bottom:14px"></div>
-      <div style="display:flex;gap:10px;align-items:center">
-        <button class="btn btn-primary" onclick="runAnalysis()" id="analyzeBtn" style="font-size:.9rem;padding:10px 20px">
-          <i class="fa-solid fa-magnifying-glass-chart"></i> วิเคราะห์ด้วย Audit-EE AI
-        </button>
-        <span style="font-size:.75rem;color:var(--muted)">ใช้ Claude claude-sonnet-4-5 — ใช้เวลา 10-20 วินาที</span>
+      <!-- Score bar -->
+      <div style="margin-bottom:14px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+          <span style="font-size:.85rem;font-weight:600;color:#93c5fd"><i class="fa-solid fa-chart-bar"></i> คะแนนการตรวจสอบ</span>
+          <span id="scorePct" style="font-size:1.5rem;font-weight:700;color:#fff">—</span>
+        </div>
+        <div style="height:8px;background:var(--bd);border-radius:4px;overflow:hidden;margin-bottom:5px">
+          <div id="scoreBar" style="height:100%;width:0;border-radius:4px;transition:width .7s ease"></div>
+        </div>
+        <div id="scoreDetail" style="font-size:.73rem;color:var(--muted)">ผ่าน — / — รายการ (PPE 5 + วัดค่า 4 + MDB 4)</div>
       </div>
+
+      <!-- Zone: PASS ≥80% -->
+      <div id="zonePass" style="display:none;background:rgba(16,185,129,.09);border:1px solid rgba(16,185,129,.4);border-radius:8px;padding:12px;margin-bottom:12px">
+        <div style="font-size:.87rem;font-weight:700;color:#10b981;margin-bottom:3px">✅ ผ่านเกณฑ์ 80% — บันทึกได้ทันที</div>
+        <div style="font-size:.74rem;color:var(--muted);margin-bottom:10px">ไม่จำเป็นต้องใช้ AI — หรือจะวิเคราะห์เพิ่มเติมก็ได้</div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap">
+          <button class="btn btn-success" onclick="saveWithoutAI()" style="font-size:.9rem;padding:10px 18px">
+            <i class="fa-solid fa-floppy-disk"></i> บันทึกผ่าน (ไม่ใช้ AI)
+          </button>
+          <button class="btn btn-ghost" onclick="runAnalysis()" id="analyzeBtn" style="font-size:.82rem">
+            <i class="fa-solid fa-magnifying-glass-chart"></i> วิเคราะห์ AI เพิ่มเติม (ไม่บังคับ)
+          </button>
+        </div>
+      </div>
+
+      <!-- Zone: FAIL <80% auto-AI -->
+      <div id="zoneFail" style="display:none;background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.35);border-radius:8px;padding:12px;margin-bottom:12px">
+        <div style="font-size:.87rem;font-weight:700;color:#f87171;margin-bottom:3px">⚠️ คะแนนต่ำกว่า 80% — วิเคราะห์ AI อัตโนมัติ</div>
+        <div style="font-size:.74rem;color:var(--muted)">ระบบส่งผลและ Micro-Lesson ทาง LINE โดยอัตโนมัติ</div>
+      </div>
+
+      <div id="preSummary" style="font-size:.82rem;color:var(--muted);margin-bottom:10px"></div>
+
       <!-- Loading -->
-      <div id="analyzeLoading" style="display:none;margin-top:16px">
+      <div id="analyzeLoading" style="display:none;margin-top:12px">
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
           <div class="spinner"></div>
           <span style="font-size:.85rem">Audit-EE กำลังวิเคราะห์รูปภาพและตรวจสอบค่ามาตรฐาน วสท....</span>
@@ -935,7 +961,7 @@ function goStep(n, force = false) {
     else { dot.className = 'step-dot'; dot.textContent = i; }
     if (i < 4) document.getElementById('sl-' + i).className = 'step-line' + (i < n ? ' done' : '');
   });
-  if (n === 4) buildPreSummary();
+  if (n === 4) { buildPreSummary(); evaluateScore(); }
   if (n === 1) captureGPS(true); // auto-capture silently
 }
 
@@ -1055,13 +1081,78 @@ function buildPreSummary() {
     <span style="margin:0 8px">|</span> รูป: <strong>${f.photos.length} รูป</strong>`;
 }
 
-async function runAnalysis() {
+function calcScore() {
+  collectStep(2); // ensure measurements are in App.form
+  const f = App.form;
+  const m = f.measurements || {};
+  const ppe = f.ppeChecklist || {};
+  const mdb = f.mdbChecklist || {};
+  const items = [];
+
+  // PPE — 5 items
+  items.push({ name: 'หมวกนิรภัย', pass: !!ppe.helmet });
+  items.push({ name: 'ถุงมือยาง',   pass: !!ppe.gloves });
+  items.push({ name: 'รองเท้านิรภัย', pass: !!ppe.safetyShoes });
+  items.push({ name: 'เสื้อสะท้อนแสง', pass: !!ppe.vest });
+  items.push({ name: 'แว่นตานิรภัย', pass: !!ppe.glasses });
+
+  // Measurements — 4 items
+  const ground = parseFloat(m.groundResistance);
+  const cont   = parseFloat(m.continuityGround);
+  const leak   = parseFloat(m.leakageCurrent);
+  const volt   = parseFloat(m.voltage);
+  const is3P   = m.phase === '3P';
+  const voltStd = is3P ? 380 : 220;
+  items.push({ name: 'Ground ≤5Ω',       pass: !isNaN(ground) && ground <= 5 });
+  items.push({ name: 'Continuity <0.5Ω', pass: !isNaN(cont) && cont < 0.5 });
+  items.push({ name: 'Leakage <10mA',    pass: !isNaN(leak) && leak < 10 });
+  items.push({ name: `Voltage ${voltStd}V±10%`, pass: !isNaN(volt) && Math.abs(volt - voltStd) <= voltStd * 0.1 });
+
+  // MDB — 4 items
+  [['breaker','เบรกเกอร์'],['timer','ทามเมอร์'],['magnetic','แมกเนติก'],['wiring','Wiring']].forEach(([k,n]) => {
+    items.push({ name: n, pass: !!mdb[k] });
+  });
+
+  const passed = items.filter(i => i.pass).length;
+  const total  = items.length; // 13
+  const pct    = Math.round((passed / total) * 100);
+  return { passed, total, pct, items };
+}
+
+function evaluateScore() {
+  const sc  = calcScore();
+  const pct = sc.pct;
+
+  // Render score display
+  document.getElementById('scorePct').textContent = pct + '%';
+  document.getElementById('scoreDetail').textContent =
+    `ผ่าน ${sc.passed} / ${sc.total} รายการ  |  PPE ${sc.items.slice(0,5).filter(i=>i.pass).length}/5  วัดค่า ${sc.items.slice(5,9).filter(i=>i.pass).length}/4  MDB ${sc.items.slice(9).filter(i=>i.pass).length}/4`;
+
+  const bar = document.getElementById('scoreBar');
+  bar.style.width = pct + '%';
+
+  if (pct >= 80) {
+    bar.style.background = '#10b981';
+    document.getElementById('scorePct').style.color = '#10b981';
+    document.getElementById('zonePass').style.display = 'block';
+    document.getElementById('zoneFail').style.display = 'none';
+  } else {
+    bar.style.background = '#f87171';
+    document.getElementById('scorePct').style.color = '#f87171';
+    document.getElementById('zonePass').style.display = 'none';
+    document.getElementById('zoneFail').style.display = 'block';
+    // Auto-trigger AI after short delay so user can see the score first
+    setTimeout(() => runAnalysis(true), 900);
+  }
+}
+
+async function runAnalysis(autoMode = false) {
   collectStep(2);
 
-  // PIN check — if adminPin is set, ask before proceeding
+  // PIN check — skip if autoMode (system-triggered by low score rule)
   const settings = App.settings || {};
   let pinValue = '';
-  if (settings.adminPin) {
+  if (!autoMode && settings.adminPin) {
     const pin = prompt('🔒 ใส่ PIN วิศวกร เพื่อวิเคราะห์ด้วย AI:');
     if (pin === null) return; // user cancelled
     pinValue = pin;
@@ -1085,6 +1176,7 @@ async function runAnalysis() {
 
   try {
     const fd = new FormData();
+    fd.append('techName', f.technicianName); // must be BEFORE photos for multer folder routing
     fd.append('inspectionData', JSON.stringify({
       codeId: f.codeId,
       locationInfo: f.locationInfo,
@@ -1109,13 +1201,36 @@ async function runAnalysis() {
     f.aiReport = data.report;
     f.savedPhotoFiles = data.photoFiles || [];
     renderAIReport(data.report);
-    btn.disabled = false;
+    if (btn) btn.disabled = false;
+
+    // Auto mode (triggered by <80% score): save + send LINE automatically
+    if (autoMode) {
+      await saveInspection();
+      await autoSendLine();
+    }
   } catch (e) {
     clearInterval(progTimer);
     loading.style.display = 'none';
     bar.style.width = '0';
-    btn.disabled = false;
+    if (btn) btn.disabled = false;
     toast('วิเคราะห์ไม่สำเร็จ: ' + e.message, 'err');
+  }
+}
+
+async function autoSendLine() {
+  try {
+    const f = App.form;
+    const r = f.aiReport;
+    if (!r || !App.savedInspectionId) return;
+    const riskEmoji = { LOW: '🟢', MEDIUM: '🟡', HIGH: '🟠', CRITICAL: '🔴' };
+    const emoji = riskEmoji[r.riskLevel] || '⚪';
+    let msg = `${emoji} Audit-EE Auto-Alert — ${r.riskLevel||''}\n━━━━━━━━━━━━\nช่าง: ${f.technicianName} (${f.technicianId})\nป้าย: ${f.codeId} — ${f.locationInfo?.name||''}\nคะแนนตรวจ: ต่ำกว่า 80% → AI วิเคราะห์อัตโนมัติ\nผล: ${r.overallStatus==='PASS'?'✅ ผ่าน':'❌ ไม่ผ่าน'}`;
+    if (r.findings?.length) msg += `\n\n⚠️ จุดบกพร่อง:\n` + r.findings.map(x => '• ' + x).join('\n');
+    if (r.microLesson && r.overallStatus === 'FAIL') msg += `\n\n📚 Micro-Lesson:\n${r.microLesson}`;
+    await api('POST', '/api/line/send', { message: msg, inspectionId: App.savedInspectionId });
+    toast('📲 ส่ง LINE อัตโนมัติเรียบร้อย', 'ok');
+  } catch (e) {
+    toast('LINE auto-send: ' + e.message, 'err');
   }
 }
 
@@ -1175,6 +1290,7 @@ async function saveWithoutAI() {
     if (f.photos && f.photos.length > 0 && photoFiles.length === 0) {
       toast('กำลังอัพโหลดรูป...', 'ok');
       const fd = new FormData();
+      fd.append('techName', f.technicianName); // must be BEFORE photos
       f.photos.forEach(p => fd.append('photos', p));
       const uRes = await fetch('/api/upload-photos', { method: 'POST', body: fd });
       const uData = await uRes.json();
