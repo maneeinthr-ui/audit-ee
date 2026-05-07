@@ -22,16 +22,34 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
   if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true });
 });
 
-function getTodayFolder(techName) {
+function getTodayFolder() {
   const d = new Date();
   const dateStr = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-  // Sanitize techName — remove path-unsafe characters
-  const safeTech = techName ? String(techName).replace(/[\/\\:*?"<>|]/g, '').trim() : '';
-  const folder = safeTech
-    ? path.join(UPLOADS_DIR, dateStr, safeTech)
-    : path.join(UPLOADS_DIR, dateStr);
+  const folder = path.join(UPLOADS_DIR, dateStr);
   if (!fs.existsSync(folder)) fs.mkdirSync(folder, { recursive: true });
   return folder;
+}
+
+// Move uploaded files into YYYY-MM-DD/techName/ subfolder after multer runs
+function moveToTechFolder(files, techName) {
+  const d = new Date();
+  const dateStr = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  const safeTech = techName ? String(techName).replace(/[\/\\:*?"<>|]/g, '').trim() : '';
+  if (!safeTech) return files; // no tech name — keep as-is
+
+  const techDir = path.join(UPLOADS_DIR, dateStr, safeTech);
+  if (!fs.existsSync(techDir)) fs.mkdirSync(techDir, { recursive: true });
+
+  return files.map(file => {
+    const newPath = path.join(techDir, file.filename);
+    try {
+      fs.renameSync(file.path, newPath);
+      return { ...file, path: newPath, destination: techDir };
+    } catch (e) {
+      console.warn('[UPLOAD] rename failed:', e.message);
+      return file;
+    }
+  });
 }
 
 const DEFAULT_SETTINGS = {
@@ -61,8 +79,7 @@ app.use('/uploads', express.static(UPLOADS_DIR));
 
 // ─── multer ────────────────────────────────────────────────────────────────────
 const storage = multer.diskStorage({
-  // req.body.techName is available here because it's appended BEFORE photos in FormData
-  destination: (req, file, cb) => cb(null, getTodayFolder(req.body.techName)),
+  destination: (req, file, cb) => cb(null, getTodayFolder()),
   filename: (req, file, cb) => {
     const ext = path.extname(file.originalname).toLowerCase() || '.jpg';
     cb(null, `${Date.now()}-${uuidv4().slice(0, 8)}${ext}`);
@@ -359,7 +376,8 @@ app.delete('/api/inspections/:id', (req, res) => {
 
 // AI Analysis — receives photos + inspection data
 app.post('/api/analyze', upload.array('photos', 10), async (req, res) => {
-  const uploadedFiles = req.files || [];
+  // Move files to tech subfolder AFTER multer is done (req.body is fully parsed now)
+  let uploadedFiles = moveToTechFolder(req.files || [], req.body.techName);
   try {
     // PIN protection — only engineer can trigger AI analysis
     const settings = readJSON('settings.json');
@@ -445,7 +463,7 @@ app.post('/api/analyze', upload.array('photos', 10), async (req, res) => {
 
 // Upload photos only (no AI) — for save-without-analyze
 app.post('/api/upload-photos', upload.array('photos', 10), (req, res) => {
-  const files = req.files || [];
+  const files = moveToTechFolder(req.files || [], req.body.techName);
   res.json({
     photoFiles: files.map(f => path.relative(UPLOADS_DIR, f.path).replace(/\\/g, '/'))
   });
