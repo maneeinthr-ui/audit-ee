@@ -30,28 +30,6 @@ function getTodayFolder() {
   return folder;
 }
 
-// Move uploaded files into YYYY-MM-DD/techName/ subfolder after multer runs
-function moveToTechFolder(files, techName) {
-  const d = new Date();
-  const dateStr = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-  const safeTech = techName ? String(techName).replace(/[\/\\:*?"<>|]/g, '').trim() : '';
-  if (!safeTech) return files; // no tech name — keep as-is
-
-  const techDir = path.join(UPLOADS_DIR, dateStr, safeTech);
-  if (!fs.existsSync(techDir)) fs.mkdirSync(techDir, { recursive: true });
-
-  return files.map(file => {
-    const newPath = path.join(techDir, file.filename);
-    try {
-      fs.renameSync(file.path, newPath);
-      return { ...file, path: newPath, destination: techDir };
-    } catch (e) {
-      console.warn('[UPLOAD] rename failed:', e.message);
-      return file;
-    }
-  });
-}
-
 const DEFAULT_SETTINGS = {
   engineerName: 'วิศวกรไฟฟ้า',
   engineerLicense: '',
@@ -376,8 +354,7 @@ app.delete('/api/inspections/:id', (req, res) => {
 
 // AI Analysis — receives photos + inspection data
 app.post('/api/analyze', upload.array('photos', 10), async (req, res) => {
-  // Move files to tech subfolder AFTER multer is done (req.body is fully parsed now)
-  let uploadedFiles = moveToTechFolder(req.files || [], req.body.techName);
+  const uploadedFiles = req.files || [];
   try {
     // PIN protection — only engineer can trigger AI analysis
     const settings = readJSON('settings.json');
@@ -463,7 +440,7 @@ app.post('/api/analyze', upload.array('photos', 10), async (req, res) => {
 
 // Upload photos only (no AI) — for save-without-analyze
 app.post('/api/upload-photos', upload.array('photos', 10), (req, res) => {
-  const files = moveToTechFolder(req.files || [], req.body.techName);
+  const files = req.files || [];
   res.json({
     photoFiles: files.map(f => path.relative(UPLOADS_DIR, f.path).replace(/\\/g, '/'))
   });
