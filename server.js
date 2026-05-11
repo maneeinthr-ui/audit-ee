@@ -207,6 +207,14 @@ const uploadCSV = multer({ dest: os.tmpdir(), limits: { fileSize: 5 * 1024 * 102
 // ─── Middleware ───────────────────────────────────────────────────────────────
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
+// ป้องกัน browser cache HTML/JS
+app.use((req, res, next) => {
+  if (req.path === '/' || req.path.endsWith('.html') || req.path.endsWith('.js')) {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+  }
+  next();
+});
 app.use(express.static(PUBLIC_DIR));
 app.use('/uploads', express.static(UPLOADS_DIR)); // serve รูป local
 

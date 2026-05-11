@@ -1286,19 +1286,10 @@ async function runAnalysis(autoMode = false) {
   }
 }
 
-// ── PIN Modal functions ────────────────────────────────────────────────────
+// ── PIN Modal functions (modal ยังคงไว้สำหรับอนาคต แต่ < 80% ไม่ใช้แล้ว) ───
 function showLinePinDialog() {
-  const settings = App.settings || {};
-  if (!settings.adminPin) {
-    // ไม่ได้ตั้ง PIN → รัน AI + ส่ง LINE โดยตรงเลย
-    runAnalysis(true);
-    return;
-  }
-  const modal = document.getElementById('pinModal');
-  modal.style.display = 'flex';
-  document.getElementById('pinInput').value = '';
-  document.getElementById('pinError').style.display = 'none';
-  setTimeout(() => document.getElementById('pinInput').focus(), 150);
+  // ไม่ถาม PIN — ส่ง LINE อัตโนมัติเลย
+  runAnalysis(true);
 }
 
 function closePinModal() {
