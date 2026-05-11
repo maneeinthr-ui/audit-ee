@@ -219,8 +219,10 @@ app.use(express.static(PUBLIC_DIR));
 app.use('/uploads', express.static(UPLOADS_DIR)); // serve รูป local
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-function getAnthropic() {
-  const key = process.env.ANTHROPIC_API_KEY || '';
+async function getAnthropic() {
+  // ดึงคีย์จาก DB ก่อน (ถูกอัพเดทล่าสุด) → fallback env var
+  const settings = await getSettings();
+  const key = settings.anthropicKey || process.env.ANTHROPIC_API_KEY || '';
   if (!key) throw new Error('ANTHROPIC_API_KEY ไม่ได้ตั้งค่า — ไปที่ Settings เพื่อใส่ API Key');
   return new Anthropic({ apiKey: key });
 }
@@ -472,7 +474,7 @@ app.post('/api/analyze', upload.array('photos', 10), async (req, res) => {
       return res.status(403).json({ error: 'PIN ไม่ถูกต้อง — เฉพาะวิศวกรเท่านั้นที่วิเคราะห์ได้' });
     }
 
-    const client   = getAnthropic();
+    const client   = await getAnthropic();
     const inspData = JSON.parse(req.body.inspectionData || '{}');
     inspData.photoCount = uploadedFiles.length;
 
