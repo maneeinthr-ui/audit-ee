@@ -1210,8 +1210,8 @@ function evaluateScore() {
     document.getElementById('scorePct').style.color = '#f87171';
     document.getElementById('zonePass').style.display = 'none';
     document.getElementById('zoneFail').style.display = 'block';
-    // Auto-trigger AI after short delay so user can see the score first
-    setTimeout(() => runAnalysis(true), 900);
+    // คะแนน < 80 → ถาม PIN ก่อน แล้วค่อย AI + ส่ง LINE
+    setTimeout(() => showLinePinDialog(), 900);
   }
 }
 
@@ -1272,10 +1272,10 @@ async function runAnalysis(autoMode = false) {
     renderAIReport(data.report);
     if (btn) btn.disabled = false;
 
-    // Auto mode (triggered by <80% score): save + show PIN dialog before LINE
+    // Auto mode (triggered by <80% score + PIN verified): save + ส่ง LINE อัตโนมัติเลย
     if (autoMode) {
       await saveInspection();
-      showLinePinDialog();   // หยุดรอ PIN ก่อนส่ง LINE
+      await autoSendLine();   // PIN ผ่านแล้วตั้งแต่ต้น ส่ง LINE ได้เลย
     }
   } catch (e) {
     clearInterval(progTimer);
@@ -1290,8 +1290,8 @@ async function runAnalysis(autoMode = false) {
 function showLinePinDialog() {
   const settings = App.settings || {};
   if (!settings.adminPin) {
-    // ยังไม่ตั้ง PIN → แจ้งให้ไปตั้งก่อน
-    toast('⚠️ คะแนน < 80% กรุณาตั้ง PIN ใน Settings ก่อนส่ง LINE', 'err');
+    // ไม่ได้ตั้ง PIN → รัน AI + ส่ง LINE โดยตรงเลย
+    runAnalysis(true);
     return;
   }
   const modal = document.getElementById('pinModal');
@@ -1314,31 +1314,18 @@ async function confirmPin() {
     document.getElementById('pinError').style.display = 'block';
     return;
   }
-  try {
-    const f = App.form;
-    const r = f.aiReport;
-    if (!r || !App.savedInspectionId) { closePinModal(); return; }
-    const riskEmoji = { LOW: '🟢', MEDIUM: '🟡', HIGH: '🟠', CRITICAL: '🔴' };
-    const emoji = riskEmoji[r.riskLevel] || '⚪';
-    let msg = `${emoji} Audit-EE Alert — คะแนน < 80%\n━━━━━━━━━━━━\nช่าง: ${f.technicianName} (${f.technicianId})\nป้าย: ${f.codeId} — ${f.locationInfo?.name||''}\nผล: ${r.overallStatus==='PASS'?'✅ ผ่าน':'❌ ไม่ผ่าน'}`;
-    if (r.findings?.length) msg += `\n\n⚠️ จุดบกพร่อง:\n` + r.findings.map(x => '• ' + x).join('\n');
-    if (r.microLesson && r.overallStatus === 'FAIL') msg += `\n\n📚 Micro-Lesson:\n${r.microLesson}`;
-
-    const res = await api('POST', '/api/line/send', {
-      message: msg,
-      inspectionId: App.savedInspectionId,
-      requirePin: true,
-      pin
-    });
-    closePinModal();
-    toast('📲 ส่ง LINE สำเร็จ ✅', 'ok');
-  } catch (e) {
-    // PIN ผิด
+  const settings = App.settings || {};
+  const adminPin = settings.adminPin || '';
+  if (adminPin && pin !== adminPin) {
     document.getElementById('pinError').textContent = '❌ PIN ไม่ถูกต้อง กรุณาลองใหม่';
     document.getElementById('pinError').style.display = 'block';
     document.getElementById('pinInput').value = '';
     document.getElementById('pinInput').focus();
+    return;
   }
+  // PIN ถูก → ปิด modal แล้วรัน AI analysis (autoMode) → LINE จะส่งอัตโนมัติหลังจากนั้น
+  closePinModal();
+  await runAnalysis(true);
 }
 
 // Close modal when clicking backdrop
@@ -1347,8 +1334,21 @@ document.getElementById('pinModal').addEventListener('click', function(e) {
 });
 
 async function autoSendLine() {
-  // Legacy: ถูกแทนที่ด้วย showLinePinDialog() แล้ว แต่คงไว้เพื่อ backward compat
-  showLinePinDialog();
+  // เรียกหลัง AI analysis สำเร็จใน autoMode — ส่ง LINE อัตโนมัติโดยไม่ต้องถาม PIN ซ้ำ
+  try {
+    const f = App.form;
+    const r = f.aiReport;
+    if (!r || !App.savedInspectionId) return;
+    const riskEmoji = { LOW: '🟢', MEDIUM: '🟡', HIGH: '🟠', CRITICAL: '🔴' };
+    const emoji = riskEmoji[r.riskLevel] || '⚪';
+    let msg = `${emoji} Audit-EE Alert — คะแนน < 80%\n━━━━━━━━━━━━\nช่าง: ${f.technicianName} (${f.technicianId})\nป้าย: ${f.codeId} — ${f.locationInfo?.name||''}\nผล: ${r.overallStatus==='PASS'?'✅ ผ่าน':'❌ ไม่ผ่าน'}`;
+    if (r.findings?.length) msg += `\n\n⚠️ จุดบกพร่อง:\n` + r.findings.map(x => '• ' + x).join('\n');
+    if (r.microLesson && r.overallStatus === 'FAIL') msg += `\n\n📚 Micro-Lesson:\n${r.microLesson}`;
+    await api('POST', '/api/line/send', { message: msg, inspectionId: App.savedInspectionId });
+    toast('📲 ส่ง LINE อัตโนมัติเรียบร้อย ✅', 'ok');
+  } catch (e) {
+    toast('LINE: ' + e.message, 'err');
+  }
 }
 
 function renderAIReport(r) {
