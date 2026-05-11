@@ -1218,12 +1218,15 @@ function evaluateScore() {
 async function runAnalysis(autoMode = false) {
   collectStep(2);
 
-  // PIN check — skip if autoMode (system-triggered by low score rule)
   const settings = App.settings || {};
   let pinValue = '';
-  if (!autoMode && settings.adminPin) {
+  if (autoMode) {
+    // autoMode: ใช้ PIN จาก settings โดยตรง ไม่ต้องถาม
+    pinValue = settings.adminPin || '';
+  } else if (settings.adminPin) {
+    // Manual mode: ถาม PIN ผ่าน prompt
     const pin = prompt('🔒 ใส่ PIN วิศวกร เพื่อวิเคราะห์ด้วย AI:');
-    if (pin === null) return; // user cancelled
+    if (pin === null) return;
     pinValue = pin;
   }
 
