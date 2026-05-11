@@ -715,6 +715,31 @@ body{background:var(--bg);color:var(--txt);font-family:'Segoe UI',sans-serif;dis
 </div>
 
 <!-- Toast -->
+<!-- ══ LINE PIN Modal ══════════════════════════════════════════════════════ -->
+<div id="pinModal" style="display:none;position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.75);align-items:center;justify-content:center">
+  <div style="background:var(--card);border-radius:16px;padding:32px 28px;width:340px;max-width:90vw;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,.4)">
+    <div style="font-size:2.4rem;margin-bottom:6px">🔐</div>
+    <div style="font-weight:700;font-size:1.1rem;margin-bottom:4px">ยืนยัน PIN วิศวกร</div>
+    <div style="font-size:.8rem;color:var(--muted);margin-bottom:4px">คะแนนต่ำกว่า 80% — ระบบพร้อมส่งแจ้งเตือน LINE</div>
+    <div style="font-size:.78rem;color:#f87171;background:rgba(248,113,113,.1);border-radius:6px;padding:6px 10px;margin-bottom:16px">
+      ⚠️ กรุณาใส่รหัส PIN เพื่อยืนยันการส่ง LINE
+    </div>
+    <input id="pinInput" type="password" inputmode="numeric" placeholder="● ● ● ● ●" maxlength="10"
+      style="width:100%;box-sizing:border-box;padding:12px;border-radius:10px;border:2px solid var(--bd);background:var(--bg);color:var(--fg);font-size:1.4rem;text-align:center;letter-spacing:.3rem;margin-bottom:8px;outline:none;transition:border .2s"
+      onfocus="this.style.borderColor='#3b82f6'" onblur="this.style.borderColor='var(--bd)'"
+      onkeydown="if(event.key==='Enter')confirmPin()">
+    <div id="pinError" style="color:#f87171;font-size:.8rem;margin-bottom:10px;display:none;padding:6px;background:rgba(248,113,113,.1);border-radius:6px">
+      ❌ PIN ไม่ถูกต้อง กรุณาลองใหม่
+    </div>
+    <div style="display:flex;gap:8px;margin-top:4px">
+      <button class="btn btn-ghost" style="flex:1;padding:10px" onclick="closePinModal()">ยกเลิก</button>
+      <button class="btn btn-line" style="flex:2;padding:10px" onclick="confirmPin()">
+        <i class="fa-brands fa-line"></i> ยืนยัน &amp; ส่ง LINE
+      </button>
+    </div>
+  </div>
+</div>
+
 <div id="toast"></div>
 
 <script>
@@ -1247,10 +1272,10 @@ async function runAnalysis(autoMode = false) {
     renderAIReport(data.report);
     if (btn) btn.disabled = false;
 
-    // Auto mode (triggered by <80% score): save + send LINE automatically
+    // Auto mode (triggered by <80% score): save + show PIN dialog before LINE
     if (autoMode) {
       await saveInspection();
-      await autoSendLine();
+      showLinePinDialog();   // หยุดรอ PIN ก่อนส่ง LINE
     }
   } catch (e) {
     clearInterval(progTimer);
@@ -1261,21 +1286,69 @@ async function runAnalysis(autoMode = false) {
   }
 }
 
-async function autoSendLine() {
+// ── PIN Modal functions ────────────────────────────────────────────────────
+function showLinePinDialog() {
+  const settings = App.settings || {};
+  if (!settings.adminPin) {
+    // ยังไม่ตั้ง PIN → แจ้งให้ไปตั้งก่อน
+    toast('⚠️ คะแนน < 80% กรุณาตั้ง PIN ใน Settings ก่อนส่ง LINE', 'err');
+    return;
+  }
+  const modal = document.getElementById('pinModal');
+  modal.style.display = 'flex';
+  document.getElementById('pinInput').value = '';
+  document.getElementById('pinError').style.display = 'none';
+  setTimeout(() => document.getElementById('pinInput').focus(), 150);
+}
+
+function closePinModal() {
+  document.getElementById('pinModal').style.display = 'none';
+  document.getElementById('pinInput').value = '';
+  document.getElementById('pinError').style.display = 'none';
+}
+
+async function confirmPin() {
+  const pin = document.getElementById('pinInput').value.trim();
+  if (!pin) {
+    document.getElementById('pinError').textContent = '❌ กรุณาใส่รหัส PIN';
+    document.getElementById('pinError').style.display = 'block';
+    return;
+  }
   try {
     const f = App.form;
     const r = f.aiReport;
-    if (!r || !App.savedInspectionId) return;
+    if (!r || !App.savedInspectionId) { closePinModal(); return; }
     const riskEmoji = { LOW: '🟢', MEDIUM: '🟡', HIGH: '🟠', CRITICAL: '🔴' };
     const emoji = riskEmoji[r.riskLevel] || '⚪';
-    let msg = `${emoji} Audit-EE Auto-Alert — ${r.riskLevel||''}\n━━━━━━━━━━━━\nช่าง: ${f.technicianName} (${f.technicianId})\nป้าย: ${f.codeId} — ${f.locationInfo?.name||''}\nคะแนนตรวจ: ต่ำกว่า 80% → AI วิเคราะห์อัตโนมัติ\nผล: ${r.overallStatus==='PASS'?'✅ ผ่าน':'❌ ไม่ผ่าน'}`;
+    let msg = `${emoji} Audit-EE Alert — คะแนน < 80%\n━━━━━━━━━━━━\nช่าง: ${f.technicianName} (${f.technicianId})\nป้าย: ${f.codeId} — ${f.locationInfo?.name||''}\nผล: ${r.overallStatus==='PASS'?'✅ ผ่าน':'❌ ไม่ผ่าน'}`;
     if (r.findings?.length) msg += `\n\n⚠️ จุดบกพร่อง:\n` + r.findings.map(x => '• ' + x).join('\n');
     if (r.microLesson && r.overallStatus === 'FAIL') msg += `\n\n📚 Micro-Lesson:\n${r.microLesson}`;
-    await api('POST', '/api/line/send', { message: msg, inspectionId: App.savedInspectionId });
-    toast('📲 ส่ง LINE อัตโนมัติเรียบร้อย', 'ok');
+
+    const res = await api('POST', '/api/line/send', {
+      message: msg,
+      inspectionId: App.savedInspectionId,
+      requirePin: true,
+      pin
+    });
+    closePinModal();
+    toast('📲 ส่ง LINE สำเร็จ ✅', 'ok');
   } catch (e) {
-    toast('LINE auto-send: ' + e.message, 'err');
+    // PIN ผิด
+    document.getElementById('pinError').textContent = '❌ PIN ไม่ถูกต้อง กรุณาลองใหม่';
+    document.getElementById('pinError').style.display = 'block';
+    document.getElementById('pinInput').value = '';
+    document.getElementById('pinInput').focus();
   }
+}
+
+// Close modal when clicking backdrop
+document.getElementById('pinModal').addEventListener('click', function(e) {
+  if (e.target === this) closePinModal();
+});
+
+async function autoSendLine() {
+  // Legacy: ถูกแทนที่ด้วย showLinePinDialog() แล้ว แต่คงไว้เพื่อ backward compat
+  showLinePinDialog();
 }
 
 function renderAIReport(r) {

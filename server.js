@@ -534,6 +534,16 @@ app.post('/api/upload-photos', upload.array('photos', 10), async (req, res) => {
 app.post('/api/line/send', async (req, res) => {
   try {
     const settings  = await getSettings();
+
+    // ── PIN verification (เมื่อ score < 80 ระบบจะส่ง pin มาด้วย) ────────────
+    const adminPin = settings.adminPin || process.env.ADMIN_PIN || '';
+    if (req.body.requirePin) {
+      if (!adminPin) return res.status(400).json({ error: 'ยังไม่ได้ตั้งค่า PIN ใน Settings' });
+      if ((req.body.pin || '') !== adminPin) {
+        return res.status(403).json({ error: 'PIN ไม่ถูกต้อง', wrongPin: true });
+      }
+    }
+
     const token     = req.body.token    || settings.lineChannelToken || process.env.LINE_CHANNEL_TOKEN;
     const targetId  = req.body.targetId || settings.lineTargetId    || process.env.LINE_TARGET_ID;
     if (!token)    return res.status(400).json({ error: 'ไม่ได้ตั้งค่า LINE Channel Access Token' });
