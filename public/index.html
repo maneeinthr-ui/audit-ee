@@ -1210,8 +1210,8 @@ function evaluateScore() {
     document.getElementById('scorePct').style.color = '#f87171';
     document.getElementById('zonePass').style.display = 'none';
     document.getElementById('zoneFail').style.display = 'block';
-    // คะแนน < 80 → ถาม PIN ก่อน แล้วค่อย AI + ส่ง LINE
-    setTimeout(() => showLinePinDialog(), 900);
+    // คะแนน < 80 → AI + ส่ง LINE อัตโนมัติเลย
+    setTimeout(() => runAnalysis(true), 900);
   }
 }
 
