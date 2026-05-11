@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Audit-EE Flow</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0a0f1e;
+    font-family: 'Segoe UI', sans-serif;
+    color: #fff;
+    padding: 28px;
+    min-height: 100vh;
+  }
+
+  /* HEADER */
+  .header {
+    text-align: center;
+    margin-bottom: 28px;
+  }
+  .header h1 {
+    font-size: 1.7rem;
+    font-weight: 800;
+    color: #60a5fa;
+    letter-spacing: 2px;
+  }
+  .header p {
+    font-size: .82rem;
+    color: #94a3b8;
+    margin-top: 4px;
+  }
+
+  /* MAIN GRID */
+  .flow {
+    display: grid;
+    grid-template-columns: 1fr 40px 1fr 40px 1fr 40px 1fr 40px 1fr;
+    align-items: start;
+    gap: 0;
+    max-width: 1280px;
+    margin: 0 auto;
+  }
+
+  /* ARROW */
+  .arrow {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding-top: 60px;
+    color: #475569;
+    font-size: 1.6rem;
+  }
+
+  /* CARD */
+  .card {
+    border-radius: 14px;
+    padding: 18px 16px;
+    position: relative;
+    border: 1px solid rgba(255,255,255,.08);
+  }
+  .card-icon {
+    font-size: 1.8rem;
+    margin-bottom: 8px;
+    display: block;
+  }
+  .card-num {
+    position: absolute;
+    top: 12px;
+    right: 14px;
+    font-size: .68rem;
+    font-weight: 700;
+    background: rgba(0,0,0,.3);
+    border-radius: 20px;
+    padding: 2px 8px;
+    color: #94a3b8;
+  }
+  .card-title {
+    font-size: .95rem;
+    font-weight: 700;
+    margin-bottom: 10px;
+  }
+  .card-items {
+    list-style: none;
+    font-size: .75rem;
+    line-height: 1.85;
+    color: rgba(255,255,255,.75);
+  }
+  .card-items li::before { content: "• "; opacity: .5; }
+
+  /* COLORS */
+  .c-blue  { background: linear-gradient(135deg,#1e3a5f,#1e40af22); border-color:#3b82f640; }
+  .c-purple{ background: linear-gradient(135deg,#2d1b69,#7c3aed22); border-color:#7c3aed40; }
+  .c-orange{ background: linear-gradient(135deg,#431407,#ea580c22); border-color:#ea580c40; }
+  .c-green { background: linear-gradient(135deg,#052e16,#16a34a22); border-color:#16a34a40; }
+  .c-cyan  { background: linear-gradient(135deg,#0c2340,#0891b222); border-color:#0891b240; }
+
+  .t-blue  { color: #93c5fd; }
+  .t-purple{ color: #c4b5fd; }
+  .t-orange{ color: #fdba74; }
+  .t-green { color: #86efac; }
+  .t-cyan  { color: #67e8f9; }
+
+  /* BRANCH SECTION */
+  .branch-wrap {
+    margin-top: 20px;
+    max-width: 1280px;
+    margin-left: auto;
+    margin-right: auto;
+  }
+  .branch-title {
+    text-align: center;
+    font-size: .8rem;
+    color: #64748b;
+    margin-bottom: 14px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+  }
+  .branch-grid {
+    display: grid;
+    grid-template-columns: 1fr 60px 1fr;
+    gap: 0;
+    align-items: start;
+  }
+  .branch-center {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding-top: 30px;
+    gap: 6px;
+    font-size: .72rem;
+    color: #64748b;
+  }
+  .score-badge {
+    background: #1e293b;
+    border: 1px solid #334155;
+    border-radius: 10px;
+    padding: 12px 16px;
+    text-align: center;
+    font-size: .85rem;
+    font-weight: 700;
+    margin-bottom: 16px;
+  }
+
+  /* PASS / FAIL cards */
+  .branch-card {
+    border-radius: 12px;
+    padding: 16px;
+    font-size: .75rem;
+    line-height: 1.8;
+    border: 1px solid;
+  }
+  .bc-green { background: rgba(16,185,129,.1); border-color: rgba(16,185,129,.4); }
+  .bc-red   { background: rgba(239,68,68,.1);  border-color: rgba(239,68,68,.4); }
+  .bc-head  { font-size: .9rem; font-weight: 700; margin-bottom: 8px; display: block; }
+
+  /* LINE card */
+  .line-card {
+    background: linear-gradient(135deg,#052e16,#16a34a22);
+    border: 1px solid #16a34a40;
+    border-radius: 10px;
+    padding: 12px 14px;
+    margin-top: 12px;
+    font-size: .73rem;
+    color: #86efac;
+  }
+
+  /* FOOTER */
+  .footer-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 14px;
+    max-width: 1280px;
+    margin: 20px auto 0;
+  }
+  .footer-card {
+    background: #111827;
+    border: 1px solid #1e293b;
+    border-radius: 10px;
+    padding: 14px 16px;
+    font-size: .75rem;
+    color: #94a3b8;
+    line-height: 1.8;
+  }
+  .footer-card strong { color: #f1f5f9; display: block; margin-bottom: 4px; font-size: .82rem; }
+
+  .divider {
+    max-width: 1280px;
+    margin: 18px auto;
+    border: none;
+    border-top: 1px dashed #1e293b;
+  }
+  .down-arrow {
+    text-align: center;
+    font-size: 1.4rem;
+    color: #475569;
+    margin: 8px 0;
+  }
+</style>
+</head>
+<body>
+
+<!-- HEADER -->
+<div class="header">
+  <h1>⚡ AUDIT-EE — AUTOMATION WORKFLOW</h1>
+  <p>ระบบตรวจสอบระบบไฟฟ้าป้ายโฆษณาอัตโนมัติ | Plan B Media</p>
+</div>
+
+<!-- ROW 1: Main Flow -->
+<div class="flow">
+
+  <!-- 1 -->
+  <div class="card c-blue">
+    <span class="card-num">01</span>
+    <span class="card-icon">👷</span>
+    <div class="card-title t-blue">ช่างกรอกข้อมูล</div>
+    <ul class="card-items">
+      <li>รหัสป้าย + ชื่อช่าง</li>
+      <li>วันที่ + GPS พิกัด</li>
+      <li>Phase 1P / 3P</li>
+    </ul>
+  </div>
+
+  <div class="arrow">→</div>
+
+  <!-- 2 -->
+  <div class="card c-blue">
+    <span class="card-num">02</span>
+    <span class="card-icon">🔌</span>
+    <div class="card-title t-blue">วัดค่าไฟฟ้า</div>
+    <ul class="card-items">
+      <li>Ground Resistance (Ω)</li>
+      <li>Continuity Ground (Ω)</li>
+      <li>Leakage Current (mA)</li>
+      <li>Voltage (V)</li>
+    </ul>
+  </div>
+
+  <div class="arrow">→</div>
+
+  <!-- 3 -->
+  <div class="card c-blue">
+    <span class="card-num">03</span>
+    <span class="card-icon">🦺</span>
+    <div class="card-title t-blue">PPE + รูปภาพ</div>
+    <ul class="card-items">
+      <li>หมวก / ถุงมือ / รองเท้า</li>
+      <li>เสื้อ / แว่นตา (5 ชิ้น)</li>
+      <li>MDB Checklist</li>
+      <li>อัพโหลดรูป ≤10 รูป</li>
+    </ul>
+  </div>
+
+  <div class="arrow">→</div>
+
+  <!-- 4 -->
+  <div class="card c-purple">
+    <span class="card-num">04</span>
+    <span class="card-icon">📊</span>
+    <div class="card-title t-purple">คำนวณคะแนน</div>
+    <ul class="card-items">
+      <li>PPE: 5 คะแนน</li>
+      <li>วัดค่า: 4 คะแนน</li>
+      <li>MDB: 4 คะแนน</li>
+      <li><strong style="color:#c4b5fd">รวม 13 คะแนน</strong></li>
+    </ul>
+  </div>
+
+  <div class="arrow">→</div>
+
+  <!-- 5 -->
+  <div class="card c-cyan">
+    <span class="card-num">05</span>
+    <span class="card-icon">🤖</span>
+    <div class="card-title t-cyan">Claude AI วิเคราะห์</div>
+    <ul class="card-items">
+      <li>OCR อ่านค่ามิเตอร์</li>
+      <li>ตรวจ PPE จากรูป</li>
+      <li>เทียบมาตรฐาน วสท.</li>
+      <li>ประเมิน Risk Level</li>
+    </ul>
+  </div>
+
+</div>
+
+<!-- BRANCH DECISION -->
+<div class="branch-wrap">
+  <div class="down-arrow">↓</div>
+  <div class="branch-title">⚙️ ระบบตัดสินใจอัตโนมัติ</div>
+
+  <div class="branch-grid">
+
+    <!-- PASS ≥80% -->
+    <div class="branch-card bc-green">
+      <span class="bc-head">✅ คะแนน ≥ 80%</span>
+      <div style="color:#86efac;font-weight:700;margin-bottom:6px">ผ่านเกณฑ์ — บันทึกทันที</div>
+      <ul style="list-style:none;color:rgba(255,255,255,.75)">
+        <li>• ไม่ต้องใช้ AI วิเคราะห์</li>
+        <li>• บันทึกสถานะ PASS อัตโนมัติ</li>
+        <li>• ประหยัดค่า API</li>
+        <li>• วิศวกรเรียกดูภายหลังได้</li>
+      </ul>
+    </div>
+
+    <!-- CENTER -->
+    <div class="branch-center">
+      <div class="score-badge">
+        <div style="color:#fbbf24;font-size:1.1rem">⚡</div>
+        <div style="color:#f1f5f9;font-size:.8rem;margin-top:4px">Score</div>
+        <div style="color:#fbbf24;font-weight:900;font-size:1.1rem">80%</div>
+      </div>
+      <div style="color:#ef4444;font-size:1.2rem">↙</div>
+      <div style="font-size:.65rem;margin-top:2px">ไม่ผ่าน</div>
+    </div>
+
+    <!-- FAIL <80% -->
+    <div>
+      <div class="branch-card bc-red">
+        <span class="bc-head">⚠️ คะแนน &lt; 80%</span>
+        <div style="color:#fca5a5;font-weight:700;margin-bottom:6px">ต้องวิเคราะห์ AI อัตโนมัติ</div>
+        <ul style="list-style:none;color:rgba(255,255,255,.75)">
+          <li>• ส่งรูป + ข้อมูลไปยัง Claude</li>
+          <li>• AI อ่านมิเตอร์ด้วย OCR</li>
+          <li>• ตรวจ PPE + เทียบ วสท.</li>
+          <li>• สร้าง Micro-Lesson อัตโนมัติ</li>
+          <li>• บันทึก FAIL + ส่ง LINE ทันที</li>
+        </ul>
+      </div>
+      <div class="line-card">
+        📲 <strong style="color:#4ade80">LINE Auto-Alert</strong><br>
+        🔴 Risk Level + ข้อบกพร่อง<br>
+        📚 Micro-Lesson 2 ข้อ พร้อมเฉลย<br>
+        ส่งหาช่าง + วิศวกรอัตโนมัติ
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<hr class="divider">
+
+<!-- FOOTER: Storage + Dashboard + Engineer -->
+<div class="footer-row">
+
+  <div class="footer-card">
+    <strong>📁 จัดเก็บข้อมูล</strong>
+    🗂 รูปภาพ → <code>uploads/YYYY-MM-DD/</code><br>
+    📋 ข้อมูล → <code>inspections.json</code><br>
+    📊 Export → <code>export/AuditEE-DATE.xlsx</code><br>
+    🔄 Master → Sync จาก Google Sheets
+  </div>
+
+  <div class="footer-card">
+    <strong>📊 Dashboard วิศวกร</strong>
+    📈 Pass Rate / Risk Distribution<br>
+    📅 ยอดตรวจรายเดือน (6 เดือน)<br>
+    ✅ อนุมัติ / ❌ Reject รายการ<br>
+    📤 Export Excel 2 Sheet
+  </div>
+
+  <div class="footer-card">
+    <strong>🔒 ระบบป้องกัน</strong>
+    🔑 PIN วิศวกร — กันช่างกด AI เอง<br>
+    📐 มาตรฐาน วสท. ตรวจอัตโนมัติ<br>
+    🌐 Cloud Railway — ใช้บนมือถือ<br>
+    💻 Local PC — เก็บข้อมูลถาวร
+  </div>
+
+</div>
+
+</body>
+</html>

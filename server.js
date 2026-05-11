@@ -1,471 +1,554 @@
-require('dotenv').config();
-const express = require('express');
-const multer = require('multer');
-const path = require('path');
-const fs = require('fs');
+require('dotenv').config({ override: true });
+const express    = require('express');
+const multer     = require('multer');
+const path       = require('path');
+const fs         = require('fs');
+const os         = require('os');
 const { v4: uuidv4 } = require('uuid');
-const Anthropic = require('@anthropic-ai/sdk');
-const axios = require('axios');
+const Anthropic  = require('@anthropic-ai/sdk');
+const axios      = require('axios');
 const { parse: csvParse } = require('csv-parse/sync');
-const sharp = require('sharp');
+const mongoose   = require('mongoose');
+const cloudinary = require('cloudinary').v2;
+const { CloudinaryStorage } = require('multer-storage-cloudinary');
 
-const app = express();
+const app  = express();
 const PORT = process.env.PORT || 3000;
-
-// ─── directories ──────────────────────────────────────────────────────────────
-const DATA_DIR = path.join(__dirname, 'data');
-const UPLOADS_DIR = path.join(__dirname, 'uploads');
+const PUBLIC_DIR  = path.join(__dirname, 'public');
 const EXPORTS_DIR = path.join(__dirname, 'export');
-const PUBLIC_DIR = path.join(__dirname, 'public');
+[PUBLIC_DIR, EXPORTS_DIR].forEach(d => { if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true }); });
 
-[DATA_DIR, UPLOADS_DIR, EXPORTS_DIR, PUBLIC_DIR].forEach(d => {
-  if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true });
+// ─── Cloudinary config ────────────────────────────────────────────────────────
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME || 'dvgxapmju',
+  api_key:    process.env.CLOUDINARY_API_KEY    || '897998889774845',
+  api_secret: process.env.CLOUDINARY_API_SECRET || ''
 });
 
-function getTodayFolder() {
-  const d = new Date();
-  const dateStr = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-  const folder = path.join(UPLOADS_DIR, dateStr);
-  if (!fs.existsSync(folder)) fs.mkdirSync(folder, { recursive: true });
-  return folder;
+// ─── MongoDB ──────────────────────────────────────────────────────────────────
+const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost/audit-ee';
+mongoose.connect(MONGODB_URI)
+  .then(() => { console.log('✅ MongoDB connected'); migrateFromJSON(); })
+  .catch(err => console.error('❌ MongoDB:', err.message));
+
+// Schemas ─────────────────────────────────────────────────────────────────────
+const photoSchema = new mongoose.Schema({
+  url:      String,   // Cloudinary secure_url
+  publicId: String,   // Cloudinary public_id (for deletion)
+  name:     String
+}, { _id: false });
+
+const inspectionSchema = new mongoose.Schema({
+  id:               { type: String, default: () => `INS-${Date.now()}` },
+  codeId:           String,
+  technicianId:     String,
+  technicianName:   String,
+  gps:              Object,
+  measurements:     Object,
+  ppeChecklist:     Object,
+  mdbChecklist:     Object,
+  locationInfo:     Object,
+  photoFiles:       { type: mongoose.Schema.Types.Mixed, default: [] }, // [{url,publicId}] or [string]
+  aiReport:         Object,
+  overallStatus:    { type: String, default: 'PENDING' },
+  engineerApproval: { type: String, default: null },
+  engineerNotes:    { type: String, default: '' },
+  engineerName:     String,
+  engineerLicense:  String,
+  approvedAt:       Date,
+  lineSent:         { type: Boolean, default: false },
+  photosDeletedAt:  Date
+}, { timestamps: true });
+
+const masterSchema = new mongoose.Schema({
+  id:        { type: String, default: uuidv4 },
+  codeId:    String,
+  name:      String,
+  location:  String,
+  mediaType: String,
+  phase:     { type: String, default: '1P' },
+  region:    String
+});
+
+const settingsSchema = new mongoose.Schema({
+  key:           { type: String, default: 'main', unique: true },
+  engineerName:  { type: String, default: 'วิศวกรไฟฟ้า' },
+  engineerLicense: String,
+  companyName:   { type: String, default: 'Plan B Media' },
+  sheetsUrl:     String,
+  lineChannelToken: String,
+  lineTargetId:  String,
+  columnMapping: { type: Object, default: { codeId: 0, name: 1, location: 2, mediaType: 3, phase: 4, region: 5 } },
+  lastSheetSync: Date,
+  adminPin:      String,
+  anthropicKey:  String
+});
+
+const Inspection = mongoose.model('Inspection', inspectionSchema);
+const Master     = mongoose.model('Master',     masterSchema);
+const Settings   = mongoose.model('Settings',   settingsSchema);
+
+async function getSettings() {
+  let s = await Settings.findOne({ key: 'main' });
+  if (!s) s = await Settings.create({ key: 'main' });
+  return s;
 }
 
-const DEFAULT_SETTINGS = {
-  engineerName: 'วิศวกรไฟฟ้า',
-  engineerLicense: '',
-  companyName: 'Plan B Media',
-  sheetsUrl: process.env.GOOGLE_SHEETS_URL || '',
-  lineChannelToken: process.env.LINE_CHANNEL_TOKEN || '',
-  lineTargetId: process.env.LINE_TARGET_ID || '',
-  columnMapping: { codeId: 0, name: 1, location: 2, mediaType: 3, phase: 4, region: 5 },
-  lastSheetSync: null
-};
+// ─── First-run migration from JSON files ──────────────────────────────────────
+async function migrateFromJSON() {
+  const DATA_DIR = path.join(__dirname, 'data');
+  try {
+    const iCount = await Inspection.countDocuments();
+    const mCount = await Master.countDocuments();
 
-function initData(filename, def) {
-  const fp = path.join(DATA_DIR, filename);
-  if (!fs.existsSync(fp)) fs.writeFileSync(fp, JSON.stringify(def, null, 2), 'utf8');
+    if (iCount === 0) {
+      const iFile = path.join(DATA_DIR, 'inspections.json');
+      if (fs.existsSync(iFile)) {
+        const records = JSON.parse(fs.readFileSync(iFile, 'utf8'));
+        if (records.length > 0) {
+          await Inspection.insertMany(records, { ordered: false }).catch(() => {});
+          console.log(`📦 Migrated ${records.length} inspections → MongoDB`);
+        }
+      }
+    }
+    if (mCount === 0) {
+      const mFile = path.join(DATA_DIR, 'master.json');
+      if (fs.existsSync(mFile)) {
+        const records = JSON.parse(fs.readFileSync(mFile, 'utf8'));
+        if (records.length > 0) {
+          await Master.insertMany(records, { ordered: false }).catch(() => {});
+          console.log(`📦 Migrated ${records.length} master records → MongoDB`);
+        }
+      }
+    }
+    // Migrate settings
+    const sFile = path.join(DATA_DIR, 'settings.json');
+    if (fs.existsSync(sFile)) {
+      const s = JSON.parse(fs.readFileSync(sFile, 'utf8'));
+      await Settings.findOneAndUpdate({ key: 'main' }, { $setOnInsert: s }, { upsert: true, new: true });
+    }
+  } catch (e) {
+    console.warn('Migration warning:', e.message);
+  }
 }
-initData('inspections.json', []);
-initData('master.json', []);
-initData('settings.json', DEFAULT_SETTINGS);
 
-// ─── middleware ────────────────────────────────────────────────────────────────
+// ─── Auto-delete Cloudinary photos older than 3 months ───────────────────────
+async function deleteOldPhotos() {
+  const cutoff = new Date();
+  cutoff.setMonth(cutoff.getMonth() - 3);
+  try {
+    const old = await Inspection.find({
+      createdAt: { $lt: cutoff },
+      photosDeletedAt: { $exists: false }
+    });
+    let deleted = 0;
+    for (const insp of old) {
+      const photos = Array.isArray(insp.photoFiles) ? insp.photoFiles : [];
+      for (const p of photos) {
+        const pid = (typeof p === 'object') ? p.publicId : null;
+        if (pid) {
+          try { await cloudinary.uploader.destroy(pid); deleted++; } catch (_) {}
+        }
+      }
+      insp.photoFiles    = [];
+      insp.photosDeletedAt = new Date();
+      await insp.save();
+    }
+    if (old.length > 0) console.log(`🗑️  Cleaned ${deleted} photos from ${old.length} old inspections`);
+  } catch (e) { console.error('[CLEANUP]', e.message); }
+}
+setInterval(deleteOldPhotos, 24 * 60 * 60 * 1000);
+setTimeout(deleteOldPhotos, 60 * 1000); // run 1 min after start
+
+// ─── Dual Storage: Local disk + Cloudinary ────────────────────────────────────
+const UPLOADS_DIR = path.join(__dirname, 'uploads');
+if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+
+// 1) บันทึก local disk ก่อน
+const localDiskStorage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    const d = new Date();
+    const dateStr = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+    const dir = path.join(UPLOADS_DIR, dateStr);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    req._uploadDateStr = dateStr;
+    cb(null, dir);
+  },
+  filename: (req, file, cb) => {
+    const ext  = path.extname(file.originalname).toLowerCase() || '.jpg';
+    const name = `${Date.now()}-${Math.random().toString(36).slice(2,8)}${ext}`;
+    cb(null, name);
+  }
+});
+
+const upload = multer({
+  storage: localDiskStorage,
+  limits: { fileSize: 20 * 1024 * 1024, files: 10 },
+  fileFilter: (req, file, cb) => cb(null, ['image/jpeg','image/png','image/webp','image/gif'].includes(file.mimetype))
+});
+
+// 2) อัพโหลด Cloudinary หลังจาก multer บันทึก local แล้ว (async, non-blocking)
+async function uploadToCloudinary(localPath, dateStr) {
+  try {
+    const result = await cloudinary.uploader.upload(localPath, {
+      folder: `audit-ee/${dateStr}`,
+      resource_type: 'image',
+      transformation: [{ width: 1920, height: 1920, crop: 'limit', quality: 'auto:good' }]
+    });
+    return { url: result.secure_url, publicId: result.public_id };
+  } catch (e) {
+    console.warn('[Cloudinary upload skip]', e.message);
+    return null;
+  }
+}
+
+const uploadCSV = multer({ dest: os.tmpdir(), limits: { fileSize: 5 * 1024 * 1024 } });
+
+// ─── Middleware ───────────────────────────────────────────────────────────────
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(PUBLIC_DIR));
-app.use('/uploads', express.static(UPLOADS_DIR));
+app.use('/uploads', express.static(UPLOADS_DIR)); // serve รูป local
 
-// ─── multer ────────────────────────────────────────────────────────────────────
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, getTodayFolder()),
-  filename: (req, file, cb) => {
-    const ext = path.extname(file.originalname).toLowerCase() || '.jpg';
-    cb(null, `${Date.now()}-${uuidv4().slice(0, 8)}${ext}`);
-  }
-});
-const upload = multer({
-  storage,
-  limits: { fileSize: 20 * 1024 * 1024, files: 10 },
-  fileFilter: (req, file, cb) => {
-    const ok = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'].includes(file.mimetype);
-    cb(null, ok);
-  }
-});
-const uploadCSV = multer({ dest: UPLOADS_DIR, limits: { fileSize: 5 * 1024 * 1024 } });
-
-// ─── helpers ───────────────────────────────────────────────────────────────────
-const readJSON = f => JSON.parse(fs.readFileSync(path.join(DATA_DIR, f), 'utf8'));
-const writeJSON = (f, d) => fs.writeFileSync(path.join(DATA_DIR, f), JSON.stringify(d, null, 2), 'utf8');
-
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 function getAnthropic() {
-  // Check env first, then settings.json as fallback
-  const key = process.env.ANTHROPIC_API_KEY || readJSON('settings.json').anthropicKey || '';
+  const key = process.env.ANTHROPIC_API_KEY || '';
   if (!key) throw new Error('ANTHROPIC_API_KEY ไม่ได้ตั้งค่า — ไปที่ Settings เพื่อใส่ API Key');
   return new Anthropic({ apiKey: key });
 }
 
-// ─── analysis prompt ──────────────────────────────────────────────────────────
 function buildPrompt(d) {
   const loc = d.locationInfo || {};
-  const m = d.measurements || {};
+  const m   = d.measurements || {};
   const ppe = d.ppeChecklist || {};
   const mdb = d.mdbChecklist || {};
   const phaseLabel = m.phase === '3P' ? '3 เฟส 380V' : '1 เฟส 220V';
-  const voltStd = m.phase === '3P' ? '380V' : '220V';
-
+  const voltStd    = m.phase === '3P' ? '380V' : '220V';
   return `คุณคือ "Audit-EE" ผู้เชี่ยวชาญด้านวิศวกรรมไฟฟ้าและความปลอดภัย บริษัท Plan B Media
 ตรวจสอบการซ่อมบำรุงระบบไฟฟ้าป้ายโฆษณาจากช่าง "${d.technicianName}" รหัส ${d.technicianId}
 
 ━━ ข้อมูลป้าย ━━
-รหัสป้าย: ${d.codeId}  |  ชื่อสถานที่: ${loc.name || 'ไม่ระบุ'}
-ที่ตั้ง: ${loc.location || 'ไม่ระบุ'}  |  ประเภทสื่อ: ${loc.mediaType || 'ไม่ระบุ'}  |  ระบบ: ${phaseLabel}
+รหัสป้าย: ${d.codeId}  |  ชื่อสถานที่: ${loc.name||'ไม่ระบุ'}
+ที่ตั้ง: ${loc.location||'ไม่ระบุ'}  |  ประเภทสื่อ: ${loc.mediaType||'ไม่ระบุ'}  |  ระบบ: ${phaseLabel}
 
 ━━ ค่าที่ช่างบันทึก ━━
-Ground Resistance : ${m.groundResistance ?? '-'} Ω   (เกณฑ์ วสท.: ≤ 5 Ω)
-Continuity Ground : ${m.continuityGround ?? '-'} Ω   (เกณฑ์ วสท.: < 0.5 Ω)
-Leakage Current   : ${m.leakageCurrent ?? '-'} mA  (เกณฑ์: <10 mA ปกติ | 10-30 mA เฝ้าระวัง | >30 mA อันตราย)
-แรงดันไฟฟ้า       : ${m.voltage ?? '-'} V   (เกณฑ์: ${voltStd})
+Ground Resistance : ${m.groundResistance??'-'} Ω   (เกณฑ์ วสท.: ≤ 5 Ω)
+Continuity Ground : ${m.continuityGround??'-'} Ω   (เกณฑ์ วสท.: < 0.5 Ω)
+Leakage Current   : ${m.leakageCurrent??'-'} mA  (เกณฑ์: <10 ปกติ | 10-30 เฝ้าระวัง | >30 อันตราย)
+แรงดันไฟฟ้า       : ${m.voltage??'-'} V   (เกณฑ์: ${voltStd})
 
 ━━ PPE Checklist ━━
-หมวกนิรภัย: ${ppe.helmet ? '✓' : '✗'}  ถุงมือยาง: ${ppe.gloves ? '✓' : '✗'}  รองเท้านิรภัย: ${ppe.safetyShoes ? '✓' : '✗'}
-เสื้อสะท้อนแสง: ${ppe.vest ? '✓' : '✗'}  แว่นตานิรภัย: ${ppe.glasses ? '✓' : '✗'}
+หมวกนิรภัย: ${ppe.helmet?'✓':'✗'}  ถุงมือยาง: ${ppe.gloves?'✓':'✗'}  รองเท้านิรภัย: ${ppe.safetyShoes?'✓':'✗'}
+เสื้อสะท้อนแสง: ${ppe.vest?'✓':'✗'}  แว่นตานิรภัย: ${ppe.glasses?'✓':'✗'}
 
 ━━ MDB Checklist ━━
-เบรกเกอร์: ${mdb.breaker ? '✓' : '✗'}  ทามเมอร์: ${mdb.timer ? '✓' : '✗'}  แมกเนติก: ${mdb.magnetic ? '✓' : '✗'}  Wiring: ${mdb.wiring ? '✓' : '✗'}
+เบรกเกอร์: ${mdb.breaker?'✓':'✗'}  ทามเมอร์: ${mdb.timer?'✓':'✗'}  แมกเนติก: ${mdb.magnetic?'✓':'✗'}  Wiring: ${mdb.wiring?'✓':'✗'}
 
 ━━ รูปภาพ ━━
-มีรูปภาพแนบมา ${d.photoCount || 0} รูป กรุณาวิเคราะห์ทุกรูปและอ่านค่าจากหน้าจอมิเตอร์ (OCR)
+มีรูปภาพแนบมา ${d.photoCount||0} รูป กรุณาวิเคราะห์ทุกรูปและอ่านค่าจากหน้าจอมิเตอร์ (OCR)
 
 ━━ เกณฑ์มาตรฐาน วสท. (ห้ามผ่อนปรน) ━━
-• Ground Resistance (Earth Tester 3 Pole): ≤ 5 Ω — หากเกิน REJECT ทันที
-• Continuity Ground (มัลติมิเตอร์): < 0.5 Ω
-• Leakage Current (Clamp Meter Leakage Mode): < 10 mA ปกติ | > 30 mA = CRITICAL ส่งไฟฟ้ารั่วแน่นอน
-• Voltage: ${voltStd} (±10%)
+• Ground Resistance ≤ 5 Ω — หากเกิน REJECT ทันที
+• Continuity Ground < 0.5 Ω
+• Leakage Current < 10 mA ปกติ | > 30 mA = CRITICAL
+• Voltage ${voltStd} (±10%)
 • PPE ต้องครบทุกชิ้นก่อนเริ่มงาน — ขาดชิ้นใดชิ้นหนึ่ง = FAIL Safety
 
 วิเคราะห์รูปภาพทั้งหมด เปรียบเทียบค่า OCR กับค่าที่ช่างบันทึก และตรวจสอบ PPE จากรูปถ่าย
-
 ตอบกลับเป็น JSON เท่านั้น ห้ามมีข้อความก่อนหรือหลัง JSON:
 {
   "ppeStatus": "ผ่าน" or "ไม่ผ่าน",
-  "ppeDetail": "สิ่งที่เห็นในรูปเกี่ยวกับ PPE (ถ้าไม่มีรูปให้ประเมินจาก checklist)",
-  "ocrReadings": {
-    "groundResistance": "ค่าที่อ่านจากรูป หรือ ไม่มีรูป",
-    "continuityGround": "...",
-    "leakageCurrent": "...",
-    "voltage": "..."
-  },
+  "ppeDetail": "...",
+  "ocrReadings": { "groundResistance": "...", "continuityGround": "...", "leakageCurrent": "...", "voltage": "..." },
   "ocrMatchCheck": "ตรงกัน or ไม่ตรงกัน or ไม่มีรูป",
-  "ocrMatchDetail": "อธิบายความแตกต่าง (ถ้ามี)",
+  "ocrMatchDetail": "...",
   "standardCheck": "ผ่าน" or "ไม่ผ่าน",
-  "standardDetail": "รายละเอียดค่าที่ไม่ผ่าน พร้อมตัวเลขจริงที่วัดได้",
+  "standardDetail": "...",
   "locationCheck": "ผ่าน" or "ไม่สามารถยืนยันได้",
-  "locationDetail": "รายละเอียดการตรวจสอบสถานที่จากรูป",
+  "locationDetail": "...",
   "mdbStatus": "ผ่าน" or "ไม่ผ่าน" or "ไม่มีข้อมูล",
-  "mdbDetail": "สภาพอุปกรณ์ใน MDB จากรูปหรือ checklist",
+  "mdbDetail": "...",
   "riskLevel": "LOW" or "MEDIUM" or "HIGH" or "CRITICAL",
-  "riskReason": "เหตุผลที่กำหนดระดับความเสี่ยงนี้",
-  "findings": ["ข้อบกพร่องที่พบ 1", "ข้อบกพร่องที่พบ 2"],
+  "riskReason": "...",
+  "findings": ["..."],
   "overallStatus": "PASS" or "FAIL",
-  "microLesson": "ข้อสอบปรนัย 2 ข้อ (เฉพาะเมื่อ FAIL) พร้อมเฉลยและอธิบายเหตุผลวิศวกรรมอย่างละเอียด เหมาะก๊อปปี้ส่ง LINE ให้ช่างทันที"
+  "microLesson": "ข้อสอบปรนัย 2 ข้อ (เฉพาะเมื่อ FAIL) พร้อมเฉลยและเหตุผลวิศวกรรม เหมาะก๊อปปี้ส่ง LINE"
 }`;
 }
 
-// ─── LINE Notify message builder ──────────────────────────────────────────────
 function buildLineMessage(inspection, report) {
-  const riskEmoji = { LOW: '🟢', MEDIUM: '🟡', HIGH: '🟠', CRITICAL: '🔴' };
+  const riskEmoji = { LOW:'🟢', MEDIUM:'🟡', HIGH:'🟠', CRITICAL:'🔴' };
   const emoji = riskEmoji[report.riskLevel] || '⚪';
-  const loc = inspection.locationInfo || {};
+  const loc   = inspection.locationInfo || {};
   const dateStr = new Date(inspection.createdAt).toLocaleString('th-TH', { timeZone: 'Asia/Bangkok' });
-
-  let msg = `\n${emoji} Audit-EE — ${report.riskLevel} ALERT\n`;
-  msg += `━━━━━━━━━━━━━━━━━\n`;
+  let msg = `\n${emoji} Audit-EE — ${report.riskLevel} ALERT\n━━━━━━━━━━━━━━━━━\n`;
   msg += `ช่าง: ${inspection.technicianName} (รหัส ${inspection.technicianId})\n`;
-  msg += `ป้าย: ${inspection.codeId} — ${loc.name || ''}\n`;
-  msg += `วันที่: ${dateStr}\n`;
-  msg += `ผล: ${report.overallStatus === 'PASS' ? '✅ ผ่าน' : '❌ ไม่ผ่าน'}\n`;
-
-  if (report.findings?.length) {
-    msg += `\n⚠️ จุดบกพร่อง:\n`;
-    report.findings.forEach(f => { msg += `• ${f}\n`; });
-  }
-
-  if (report.microLesson && report.overallStatus === 'FAIL') {
-    msg += `\n📚 Micro-Lesson:\n${report.microLesson}`;
-  }
-
-  return msg.slice(0, 1000); // LINE Notify limit 1000 chars
+  msg += `ป้าย: ${inspection.codeId} — ${loc.name||''}\nวันที่: ${dateStr}\n`;
+  msg += `ผล: ${report.overallStatus==='PASS'?'✅ ผ่าน':'❌ ไม่ผ่าน'}\n`;
+  if (report.findings?.length) { msg += `\n⚠️ จุดบกพร่อง:\n`; report.findings.forEach(f => { msg += `• ${f}\n`; }); }
+  if (report.microLesson && report.overallStatus==='FAIL') msg += `\n📚 Micro-Lesson:\n${report.microLesson}`;
+  return msg.slice(0, 1000);
 }
 
-// ─── ROUTES ────────────────────────────────────────────────────────────────────
+// ─── ROUTES ───────────────────────────────────────────────────────────────────
 
-// Settings
-app.get('/api/settings', (req, res) => res.json(readJSON('settings.json')));
-
-app.put('/api/settings', (req, res) => {
-  const current = readJSON('settings.json');
-  const body = req.body;
-  // Update env vars live
-  if (body.anthropicKey) {
-    process.env.ANTHROPIC_API_KEY = body.anthropicKey;
-    // Persist key in settings.json so it survives server restart
-    body.anthropicKey = body.anthropicKey;
-  }
-  if (body.lineChannelToken !== undefined) process.env.LINE_CHANNEL_TOKEN = body.lineChannelToken;
-  if (body.lineTargetId !== undefined) process.env.LINE_TARGET_ID = body.lineTargetId;
-  if (body.sheetsUrl !== undefined) process.env.GOOGLE_SHEETS_URL = body.sheetsUrl;
-  const updated = { ...current, ...body };
-  writeJSON('settings.json', updated);
-  res.json({ success: true, settings: updated });
+// ── Settings ──────────────────────────────────────────────────────────────────
+app.get('/api/settings', async (req, res) => {
+  try { res.json(await getSettings()); } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Master data
-app.get('/api/master', (req, res) => res.json(readJSON('master.json')));
-
-app.post('/api/master', (req, res) => {
-  const master = readJSON('master.json');
-  const item = { ...req.body, id: uuidv4() };
-  master.push(item);
-  writeJSON('master.json', master);
-  res.status(201).json(item);
+app.put('/api/settings', async (req, res) => {
+  try {
+    const body = req.body;
+    if (body.anthropicKey)      process.env.ANTHROPIC_API_KEY  = body.anthropicKey;
+    if (body.lineChannelToken)  process.env.LINE_CHANNEL_TOKEN = body.lineChannelToken;
+    if (body.lineTargetId)      process.env.LINE_TARGET_ID     = body.lineTargetId;
+    if (body.sheetsUrl)         process.env.GOOGLE_SHEETS_URL  = body.sheetsUrl;
+    const s = await Settings.findOneAndUpdate({ key: 'main' }, { $set: body }, { upsert: true, new: true });
+    res.json({ success: true, settings: s });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.put('/api/master/:id', (req, res) => {
-  const master = readJSON('master.json');
-  const idx = master.findIndex(m => m.id === req.params.id);
-  if (idx === -1) return res.status(404).json({ error: 'ไม่พบข้อมูล' });
-  master[idx] = { ...master[idx], ...req.body };
-  writeJSON('master.json', master);
-  res.json(master[idx]);
+// ── Master data ───────────────────────────────────────────────────────────────
+app.get('/api/master', async (req, res) => {
+  try { res.json(await Master.find({}).lean()); } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.delete('/api/master/:id', (req, res) => {
-  const master = readJSON('master.json');
-  writeJSON('master.json', master.filter(m => m.id !== req.params.id));
-  res.json({ success: true });
+app.post('/api/master', async (req, res) => {
+  try { const item = await Master.create({ ...req.body, id: uuidv4() }); res.status(201).json(item); }
+  catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Sync from Google Sheets via CSV export URL
+app.put('/api/master/:id', async (req, res) => {
+  try {
+    const item = await Master.findOneAndUpdate({ id: req.params.id }, { $set: req.body }, { new: true });
+    if (!item) return res.status(404).json({ error: 'ไม่พบข้อมูล' });
+    res.json(item);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/api/master/:id', async (req, res) => {
+  try { await Master.deleteOne({ id: req.params.id }); res.json({ success: true }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Sync from Google Sheets
 app.post('/api/master/sync', async (req, res) => {
   try {
-    const settings = readJSON('settings.json');
+    const settings = await getSettings();
     const url = req.body.url || settings.sheetsUrl || process.env.GOOGLE_SHEETS_URL;
-    if (!url) return res.status(400).json({ error: 'ไม่ได้ตั้งค่า Google Sheets URL ใน Settings' });
-
-    const response = await axios.get(url, {
-      responseType: 'arraybuffer',
-      timeout: 20000,
-      headers: { Accept: 'text/csv' }
-    });
-
-    const csvText = Buffer.from(response.data).toString('utf8');
-    const records = csvParse(csvText, { skip_empty_lines: true, relax_column_count: true });
-    const mapping = settings.columnMapping;
-
-    const master = records.slice(1)
-      .map(row => ({
-        id: uuidv4(),
-        codeId: String(row[mapping.codeId] || '').trim(),
-        name: String(row[mapping.name] || '').trim(),
-        location: String(row[mapping.location] || '').trim(),
-        mediaType: String(row[mapping.mediaType] || '').trim(),
-        phase: String(row[mapping.phase] || '1P').trim(),
-        region: String(row[mapping.region] || '').trim()
-      }))
-      .filter(r => r.codeId);
-
-    writeJSON('master.json', master);
-    const syncedAt = new Date().toISOString();
-    writeJSON('settings.json', { ...settings, lastSheetSync: syncedAt, sheetsUrl: url });
-
-    res.json({ success: true, count: master.length, syncedAt });
-  } catch (err) {
-    res.status(500).json({ error: `Sync ล้มเหลว: ${err.message}` });
-  }
+    if (!url) return res.status(400).json({ error: 'ไม่ได้ตั้งค่า Google Sheets URL' });
+    const response = await axios.get(url, { responseType: 'arraybuffer', timeout: 20000 });
+    const csvText  = Buffer.from(response.data).toString('utf8');
+    const records  = csvParse(csvText, { skip_empty_lines: true, relax_column_count: true });
+    const mapping  = settings.columnMapping || { codeId:0,name:1,location:2,mediaType:3,phase:4,region:5 };
+    const items    = records.slice(1).map(row => ({
+      id: uuidv4(), codeId: String(row[mapping.codeId]||'').trim(),
+      name: String(row[mapping.name]||'').trim(), location: String(row[mapping.location]||'').trim(),
+      mediaType: String(row[mapping.mediaType]||'').trim(), phase: String(row[mapping.phase]||'1P').trim(),
+      region: String(row[mapping.region]||'').trim()
+    })).filter(r => r.codeId);
+    await Master.deleteMany({});
+    if (items.length > 0) await Master.insertMany(items);
+    const syncedAt = new Date();
+    await Settings.findOneAndUpdate({ key: 'main' }, { $set: { lastSheetSync: syncedAt, sheetsUrl: url } });
+    res.json({ success: true, count: items.length, syncedAt });
+  } catch (e) { res.status(500).json({ error: `Sync ล้มเหลว: ${e.message}` }); }
 });
 
-// Import master from CSV file
-app.post('/api/master/import', uploadCSV.single('csv'), (req, res) => {
+// Import CSV
+app.post('/api/master/import', uploadCSV.single('csv'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'ไม่มีไฟล์' });
     const csvText = fs.readFileSync(req.file.path, 'utf8');
     fs.unlinkSync(req.file.path);
-    const settings = readJSON('settings.json');
-    const records = csvParse(csvText, { skip_empty_lines: true, relax_column_count: true });
-    const mapping = settings.columnMapping;
-    const master = records.slice(1)
-      .map(row => ({
-        id: uuidv4(),
-        codeId: String(row[mapping.codeId] || '').trim(),
-        name: String(row[mapping.name] || '').trim(),
-        location: String(row[mapping.location] || '').trim(),
-        mediaType: String(row[mapping.mediaType] || '').trim(),
-        phase: String(row[mapping.phase] || '1P').trim(),
-        region: String(row[mapping.region] || '').trim()
-      }))
-      .filter(r => r.codeId);
-    writeJSON('master.json', master);
-    res.json({ success: true, count: master.length });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+    const settings = await getSettings();
+    const mapping  = settings.columnMapping || { codeId:0,name:1,location:2,mediaType:3,phase:4,region:5 };
+    const records  = csvParse(csvText, { skip_empty_lines: true, relax_column_count: true });
+    const items    = records.slice(1).map(row => ({
+      id: uuidv4(), codeId: String(row[mapping.codeId]||'').trim(), name: String(row[mapping.name]||'').trim(),
+      location: String(row[mapping.location]||'').trim(), mediaType: String(row[mapping.mediaType]||'').trim(),
+      phase: String(row[mapping.phase]||'1P').trim(), region: String(row[mapping.region]||'').trim()
+    })).filter(r => r.codeId);
+    await Master.deleteMany({});
+    if (items.length > 0) await Master.insertMany(items);
+    res.json({ success: true, count: items.length });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Inspections
-app.get('/api/inspections', (req, res) => {
-  let data = readJSON('inspections.json');
-  const { status, techId, codeId, from, to, risk } = req.query;
-  if (status) data = data.filter(i => i.overallStatus === status);
-  if (techId) data = data.filter(i => i.technicianId === techId);
-  if (codeId) data = data.filter(i => i.codeId === codeId);
-  if (risk) data = data.filter(i => (i.aiReport?.riskLevel || '') === risk);
-  if (from) data = data.filter(i => new Date(i.createdAt) >= new Date(from));
-  if (to) data = data.filter(i => new Date(i.createdAt) <= new Date(to + 'T23:59:59'));
-  data.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-  res.json(data);
+// ── Inspections ───────────────────────────────────────────────────────────────
+app.get('/api/inspections', async (req, res) => {
+  try {
+    const { status, techId, codeId, from, to, risk } = req.query;
+    const filter = {};
+    if (status) filter.overallStatus = status;
+    if (techId) filter.technicianId  = techId;
+    if (codeId) filter.codeId        = codeId;
+    if (risk)   filter['aiReport.riskLevel'] = risk;
+    if (from || to) {
+      filter.createdAt = {};
+      if (from) filter.createdAt.$gte = new Date(from);
+      if (to)   filter.createdAt.$lte = new Date(to + 'T23:59:59');
+    }
+    const data = await Inspection.find(filter).sort({ createdAt: -1 }).lean();
+    res.json(data);
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.post('/api/inspections', (req, res) => {
-  const inspections = readJSON('inspections.json');
-  const rec = {
-    id: `INS-${Date.now()}`,
-    ...req.body,
-    overallStatus: req.body.aiReport?.overallStatus || 'PENDING',
-    engineerApproval: null,
-    engineerNotes: '',
-    lineSent: false,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString()
-  };
-  inspections.unshift(rec);
-  writeJSON('inspections.json', inspections);
-  res.status(201).json(rec);
+app.post('/api/inspections', async (req, res) => {
+  try {
+    const rec = await Inspection.create({
+      ...req.body,
+      id: `INS-${Date.now()}`,
+      overallStatus:    req.body.aiReport?.overallStatus || 'PENDING',
+      engineerApproval: null,
+      engineerNotes:    '',
+      lineSent:         false
+    });
+    res.status(201).json(rec);
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.get('/api/inspections/:id', (req, res) => {
-  const rec = readJSON('inspections.json').find(i => i.id === req.params.id);
-  if (!rec) return res.status(404).json({ error: 'ไม่พบข้อมูล' });
-  res.json(rec);
+app.get('/api/inspections/:id', async (req, res) => {
+  try {
+    const rec = await Inspection.findOne({ id: req.params.id }).lean();
+    if (!rec) return res.status(404).json({ error: 'ไม่พบข้อมูล' });
+    res.json(rec);
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.put('/api/inspections/:id/approve', (req, res) => {
-  const data = readJSON('inspections.json');
-  const idx = data.findIndex(i => i.id === req.params.id);
-  if (idx === -1) return res.status(404).json({ error: 'ไม่พบข้อมูล' });
-  const settings = readJSON('settings.json');
-  data[idx] = {
-    ...data[idx],
-    engineerApproval: req.body.decision,
-    engineerNotes: req.body.notes || '',
-    engineerName: settings.engineerName,
-    engineerLicense: settings.engineerLicense,
-    approvedAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString()
-  };
-  writeJSON('inspections.json', data);
-  res.json(data[idx]);
+app.put('/api/inspections/:id/approve', async (req, res) => {
+  try {
+    const settings = await getSettings();
+    const rec = await Inspection.findOneAndUpdate(
+      { id: req.params.id },
+      { $set: {
+          engineerApproval: req.body.decision,
+          engineerNotes:    req.body.notes || '',
+          engineerName:     settings.engineerName,
+          engineerLicense:  settings.engineerLicense,
+          approvedAt:       new Date()
+        }
+      },
+      { new: true }
+    );
+    if (!rec) return res.status(404).json({ error: 'ไม่พบข้อมูล' });
+    res.json(rec);
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.delete('/api/inspections/:id', (req, res) => {
-  const data = readJSON('inspections.json');
-  writeJSON('inspections.json', data.filter(i => i.id !== req.params.id));
-  res.json({ success: true });
+app.delete('/api/inspections/:id', async (req, res) => {
+  try {
+    const rec = await Inspection.findOne({ id: req.params.id });
+    if (rec) {
+      // Delete photos from Cloudinary
+      const photos = Array.isArray(rec.photoFiles) ? rec.photoFiles : [];
+      for (const p of photos) {
+        const pid = (typeof p === 'object') ? p.publicId : null;
+        if (pid) { try { await cloudinary.uploader.destroy(pid); } catch (_) {} }
+      }
+      await rec.deleteOne();
+    }
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// AI Analysis — receives photos + inspection data
+// ── AI Analysis ───────────────────────────────────────────────────────────────
 app.post('/api/analyze', upload.array('photos', 10), async (req, res) => {
   const uploadedFiles = req.files || [];
   try {
-    // PIN protection — only engineer can trigger AI analysis
-    const settings = readJSON('settings.json');
-    const adminPin = settings.adminPin || '';
-    if (adminPin) {
-      const submittedPin = req.body.adminPin || '';
-      if (submittedPin !== adminPin) {
-        uploadedFiles.forEach(f => { try { fs.unlinkSync(f.path); } catch(_){} });
-        return res.status(403).json({ error: 'PIN ไม่ถูกต้อง — เฉพาะวิศวกรเท่านั้นที่วิเคราะห์ได้' });
-      }
+    // PIN check
+    const settings = await getSettings();
+    const adminPin  = settings.adminPin || process.env.ADMIN_PIN || '';
+    if (adminPin && (req.body.adminPin || '') !== adminPin) {
+      return res.status(403).json({ error: 'PIN ไม่ถูกต้อง — เฉพาะวิศวกรเท่านั้นที่วิเคราะห์ได้' });
     }
 
-    const client = getAnthropic();
+    const client   = getAnthropic();
     const inspData = JSON.parse(req.body.inspectionData || '{}');
     inspData.photoCount = uploadedFiles.length;
 
+    // อัพโหลด Cloudinary แบบ parallel (รูปถูก save local แล้ว)
+    const cldResults = await Promise.all(
+      uploadedFiles.map(f => uploadToCloudinary(f.path, f.destination.split(path.sep).pop()))
+    );
+
+    // Build content: ใช้ base64 จาก local file ส่งให้ Claude (เร็วกว่า URL)
     const content = [];
-
-    // Add images as base64 (auto-resize if > 4MB)
-    const MAX_BYTES = 4 * 1024 * 1024; // 4 MB
-    for (const photo of uploadedFiles) {
-      let imgBuf = fs.readFileSync(photo.path);
+    for (const file of uploadedFiles) {
       try {
-        if (imgBuf.length > MAX_BYTES) {
-          // Resize to max 1920px wide/tall, quality 85
-          imgBuf = await sharp(imgBuf)
-            .resize(1920, 1920, { fit: 'inside', withoutEnlargement: true })
-            .jpeg({ quality: 85 })
-            .toBuffer();
-        }
-      } catch (sharpErr) {
-        console.warn('sharp resize failed, using original:', sharpErr.message);
-      }
-      content.push({
-        type: 'image',
-        source: {
-          type: 'base64',
-          media_type: imgBuf.length < fs.statSync(photo.path).size ? 'image/jpeg' : photo.mimetype,
-          data: imgBuf.toString('base64')
-        }
-      });
+        const data = fs.readFileSync(file.path).toString('base64');
+        const mime = file.mimetype || 'image/jpeg';
+        content.push({ type: 'image', source: { type: 'base64', media_type: mime, data } });
+      } catch (_) {}
     }
-
     content.push({ type: 'text', text: buildPrompt(inspData) });
 
     const message = await client.messages.create({
-      model: 'claude-opus-4-5',
+      model:      'claude-opus-4-5',
       max_tokens: 4096,
-      messages: [{ role: 'user', content }]
+      messages:   [{ role: 'user', content }]
     });
 
     const raw = message.content[0].text;
-    console.log('[AI RAW]', raw.slice(0, 300)); // debug first 300 chars
-
-    // Extract JSON — handle possible markdown code fences and extra text
     let report;
     try {
-      // Strip markdown fences
-      let stripped = raw.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
-      // Find the outermost JSON object (greedy from first { to last })
-      const firstBrace = stripped.indexOf('{');
-      const lastBrace = stripped.lastIndexOf('}');
-      if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
-        stripped = stripped.slice(firstBrace, lastBrace + 1);
-      }
+      let stripped = raw.replace(/```json\s*/gi,'').replace(/```\s*/g,'').trim();
+      const fb = stripped.indexOf('{'), lb = stripped.lastIndexOf('}');
+      if (fb !== -1 && lb > fb) stripped = stripped.slice(fb, lb + 1);
       report = JSON.parse(stripped);
     } catch (parseErr) {
-      console.error('[AI PARSE ERROR]', parseErr.message);
-      console.error('[AI RAW FULL]', raw);
-      report = { rawResponse: raw, overallStatus: 'FAIL', riskLevel: 'MEDIUM', findings: [`AI ตอบกลับแต่ parse JSON ไม่สำเร็จ: ${parseErr.message}`] };
+      report = { rawResponse: raw, overallStatus: 'FAIL', riskLevel: 'MEDIUM', findings: [`AI parse error: ${parseErr.message}`] };
     }
 
-    res.json({
-      success: true,
-      report,
-      photoFiles: uploadedFiles.map(f => path.relative(UPLOADS_DIR, f.path).replace(/\\/g, '/'))
-    });
+    // สร้าง photoFiles: local path + Cloudinary url (ถ้ามี)
+    const dateStr = uploadedFiles[0]?.destination.split(path.sep).pop() || '';
+    const photoFiles = uploadedFiles.map((f, i) => ({
+      localPath: `${dateStr}/${f.filename}`,          // path local สำหรับ serve /uploads/
+      url:       cldResults[i]?.url || `/uploads/${dateStr}/${f.filename}`,
+      publicId:  cldResults[i]?.publicId || '',
+      name:      f.originalname || ''
+    }));
+
+    res.json({ success: true, report, photoFiles });
   } catch (err) {
-    // Keep uploaded files so they can be referenced after manual save
     res.status(500).json({ error: err.message });
   }
 });
 
-// Upload photos only (no AI) — for save-without-analyze
-app.post('/api/upload-photos', upload.array('photos', 10), (req, res) => {
+// Upload photos only (no AI)
+app.post('/api/upload-photos', upload.array('photos', 10), async (req, res) => {
   const files = req.files || [];
-  res.json({
-    photoFiles: files.map(f => path.relative(UPLOADS_DIR, f.path).replace(/\\/g, '/'))
-  });
+  const dateStr = files[0]?.destination.split(path.sep).pop() || '';
+  const cldResults = await Promise.all(files.map(f => uploadToCloudinary(f.path, dateStr)));
+  const photoFiles = files.map((f, i) => ({
+    localPath: `${dateStr}/${f.filename}`,
+    url:       cldResults[i]?.url || `/uploads/${dateStr}/${f.filename}`,
+    publicId:  cldResults[i]?.publicId || '',
+    name:      f.originalname || ''
+  }));
+  res.json({ photoFiles });
 });
 
-// LINE Messaging API — push message
+// ── LINE ──────────────────────────────────────────────────────────────────────
 app.post('/api/line/send', async (req, res) => {
   try {
-    const settings = readJSON('settings.json');
-    const token = req.body.token || settings.lineChannelToken || process.env.LINE_CHANNEL_TOKEN;
-    const targetId = req.body.targetId || settings.lineTargetId || process.env.LINE_TARGET_ID;
-    if (!token) return res.status(400).json({ error: 'ไม่ได้ตั้งค่า LINE Channel Access Token' });
-    if (!targetId) return res.status(400).json({ error: 'ไม่ได้ตั้งค่า LINE Target ID (User ID หรือ Group ID)' });
+    const settings  = await getSettings();
+    const token     = req.body.token    || settings.lineChannelToken || process.env.LINE_CHANNEL_TOKEN;
+    const targetId  = req.body.targetId || settings.lineTargetId    || process.env.LINE_TARGET_ID;
+    if (!token)    return res.status(400).json({ error: 'ไม่ได้ตั้งค่า LINE Channel Access Token' });
+    if (!targetId) return res.status(400).json({ error: 'ไม่ได้ตั้งค่า LINE Target ID' });
 
     let message = req.body.message;
     if (!message && req.body.inspectionId) {
-      const rec = readJSON('inspections.json').find(i => i.id === req.body.inspectionId);
-      if (rec && rec.aiReport) message = buildLineMessage(rec, rec.aiReport);
+      const rec = await Inspection.findOne({ id: req.body.inspectionId }).lean();
+      if (rec?.aiReport) message = buildLineMessage(rec, rec.aiReport);
     }
     if (!message) return res.status(400).json({ error: 'ไม่มีข้อความ' });
 
-    // Split into ≤2 messages: alert + micro-lesson (Messaging API limit: 5000 chars/message, 5 msg/push)
     const messages = [];
-    const LESSON_MARKER = '\n\n📚 Micro-Lesson:';
-    const splitAt = message.indexOf(LESSON_MARKER);
+    const MARKER   = '\n\n📚 Micro-Lesson:';
+    const splitAt  = message.indexOf(MARKER);
     if (splitAt !== -1 && message.length > 1000) {
       messages.push({ type: 'text', text: message.slice(0, splitAt).trim() });
       messages.push({ type: 'text', text: message.slice(splitAt).trim() });
@@ -475,280 +558,220 @@ app.post('/api/line/send', async (req, res) => {
 
     await axios.post('https://api.line.me/v2/bot/message/push',
       { to: targetId, messages },
-      {
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`
-        },
-        timeout: 10000
-      }
+      { headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, timeout: 10000 }
     );
 
-    // Mark as sent
     if (req.body.inspectionId) {
-      const data = readJSON('inspections.json');
-      const idx = data.findIndex(i => i.id === req.body.inspectionId);
-      if (idx !== -1) { data[idx].lineSent = true; writeJSON('inspections.json', data); }
+      await Inspection.findOneAndUpdate({ id: req.body.inspectionId }, { $set: { lineSent: true } });
     }
-
     res.json({ success: true });
   } catch (err) {
-    const detail = err.response?.data?.message || err.message;
-    res.status(500).json({ error: `LINE ส่งไม่สำเร็จ: ${detail}` });
+    res.status(500).json({ error: `LINE ส่งไม่สำเร็จ: ${err.response?.data?.message || err.message}` });
   }
 });
 
-// LINE Webhook — รับ event เพื่อดึง Group ID / User ID อัตโนมัติ
+// LINE Webhook
 let lastLineEvents = [];
 app.post('/webhook/line', (req, res) => {
-  res.sendStatus(200); // ต้องตอบ 200 ก่อนเสมอ
+  res.sendStatus(200);
   const events = req.body?.events || [];
   events.forEach(ev => {
     const src = ev.source || {};
-    const entry = {
-      type: src.type,             // 'user', 'group', 'room'
-      id: src.groupId || src.roomId || src.userId,
-      userId: src.userId,
-      eventType: ev.type,         // 'message', 'join', etc.
-      text: ev.message?.text || '',
-      timestamp: new Date().toISOString()
-    };
+    const entry = { type: src.type, id: src.groupId||src.roomId||src.userId, userId: src.userId,
+      eventType: ev.type, text: ev.message?.text||'', timestamp: new Date().toISOString() };
     lastLineEvents.unshift(entry);
-    lastLineEvents = lastLineEvents.slice(0, 20); // keep last 20
-    console.log(`[LINE Webhook] ${entry.type} ID: ${entry.id} | User: ${entry.userId} | "${entry.text}"`);
+    lastLineEvents = lastLineEvents.slice(0, 20);
+    console.log(`[LINE Webhook] ${entry.type} ID: ${entry.id} | "${entry.text}"`);
   });
 });
-
-// Return captured IDs so Settings UI can show them
 app.get('/api/line/discovered-ids', (req, res) => res.json(lastLineEvents));
 
-// Dashboard stats
-app.get('/api/dashboard', (req, res) => {
-  const data = readJSON('inspections.json');
-  const settings = readJSON('settings.json');
-  const now = new Date();
+// ── Dashboard ─────────────────────────────────────────────────────────────────
+app.get('/api/dashboard', async (req, res) => {
+  try {
+    const [data, settings] = await Promise.all([
+      Inspection.find({}).sort({ createdAt: -1 }).lean(),
+      getSettings()
+    ]);
+    const now     = new Date();
+    const byStatus = { PASS:0, FAIL:0, PENDING:0 };
+    const byRisk   = { LOW:0, MEDIUM:0, HIGH:0, CRITICAL:0 };
+    const monthly  = {};
+    let thisMonth  = 0;
 
-  const byStatus = { PASS: 0, FAIL: 0, PENDING: 0 };
-  const byRisk = { LOW: 0, MEDIUM: 0, HIGH: 0, CRITICAL: 0 };
-  const monthly = {};
-  let thisMonth = 0;
+    data.forEach(i => {
+      const s = i.overallStatus || 'PENDING';
+      byStatus[s] = (byStatus[s]||0) + 1;
+      const r = i.aiReport?.riskLevel || 'MEDIUM';
+      byRisk[r]   = (byRisk[r]||0) + 1;
+      const d = new Date(i.createdAt);
+      if (d.getMonth()===now.getMonth() && d.getFullYear()===now.getFullYear()) thisMonth++;
+      const key = new Date(i.createdAt).toISOString().slice(0,7);
+      monthly[key] = (monthly[key]||0) + 1;
+    });
 
-  data.forEach(i => {
-    const s = i.overallStatus || 'PENDING';
-    byStatus[s] = (byStatus[s] || 0) + 1;
-    const r = i.aiReport?.riskLevel || 'MEDIUM';
-    byRisk[r] = (byRisk[r] || 0) + 1;
-    const d = new Date(i.createdAt);
-    if (d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear()) thisMonth++;
-    const key = i.createdAt.slice(0, 7);
-    monthly[key] = (monthly[key] || 0) + 1;
-  });
-
-  const passRate = data.length > 0 ? Math.round((byStatus.PASS / data.length) * 100) : 0;
-
-  res.json({
-    total: data.length,
-    passRate,
-    critical: byRisk.CRITICAL,
-    thisMonth,
-    byStatus,
-    byRisk,
-    monthly: Object.entries(monthly).sort().slice(-6).map(([month, count]) => ({ month, count })),
-    lastSheetSync: settings.lastSheetSync,
-    recent: data.slice(0, 8)
-  });
+    res.json({
+      total:    data.length,
+      passRate: data.length > 0 ? Math.round((byStatus.PASS/data.length)*100) : 0,
+      critical: byRisk.CRITICAL,
+      thisMonth,
+      byStatus,
+      byRisk,
+      monthly:  Object.entries(monthly).sort().slice(-6).map(([month,count])=>({ month,count })),
+      lastSheetSync: settings.lastSheetSync,
+      recent:   data.slice(0, 8)
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Export inspections as Excel (.xlsx)
+// ── Export Excel ──────────────────────────────────────────────────────────────
 app.get('/api/export/excel', async (req, res) => {
   const ExcelJS = require('exceljs');
-  const data = readJSON('inspections.json');
-  const settings = readJSON('settings.json');
-
-  const wb = new ExcelJS.Workbook();
-  wb.creator = settings.engineerName || 'Audit-EE';
-  wb.created = new Date();
-
-  // ── Sheet 1: รายงานการตรวจสอบ ──────────────────────────────────────────────
-  const ws = wb.addWorksheet('รายงานการตรวจสอบ');
-
-  // Header row styling
-  ws.columns = [
-    { header: 'วันที่ตรวจ', key: 'date', width: 14 },
-    { header: 'Code ID', key: 'codeId', width: 10 },
-    { header: 'ชื่อสถานที่', key: 'name', width: 28 },
-    { header: 'ที่ตั้ง', key: 'location', width: 30 },
-    { header: 'ช่าง', key: 'tech', width: 12 },
-    { header: 'รหัสช่าง', key: 'techId', width: 10 },
-    { header: 'Ground(Ω)', key: 'ground', width: 12 },
-    { header: 'Continuity(Ω)', key: 'continuity', width: 14 },
-    { header: 'Leakage(mA)', key: 'leakage', width: 13 },
-    { header: 'Voltage(V)', key: 'voltage', width: 12 },
-    { header: 'Phase', key: 'phase', width: 8 },
-    { header: 'PPE', key: 'ppe', width: 8 },
-    { header: 'ผล', key: 'status', width: 10 },
-    { header: 'Risk', key: 'risk', width: 10 },
-    { header: 'วิศวกรอนุมัติ', key: 'eng', width: 14 },
-    { header: 'หมายเหตุ', key: 'notes', width: 30 },
-  ];
-
-  // Style header
-  const headerRow = ws.getRow(1);
-  headerRow.eachCell(cell => {
-    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E3A5F' } };
-    cell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
-    cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
-    cell.border = { bottom: { style: 'thin', color: { argb: 'FF60A5FA' } } };
-  });
-  headerRow.height = 28;
-
-  // Data rows
-  const PASS_GREEN = 'FFD1FAE5'; const FAIL_RED = 'FFFEE2E2'; const MED_ORANGE = 'FFFEF3C7';
-  data.forEach(i => {
-    const ppeCount = Object.values(i.ppeChecklist || {}).filter(Boolean).length;
-    const isFail = i.overallStatus === 'FAIL';
-    const risk = i.aiReport?.riskLevel || '';
-    const row = ws.addRow({
-      date: i.createdAt ? i.createdAt.slice(0, 10) : '',
-      codeId: i.codeId,
-      name: i.locationInfo?.name || '',
-      location: i.locationInfo?.location || '',
-      tech: i.technicianName,
-      techId: i.technicianId,
-      ground: i.measurements?.groundResistance,
-      continuity: i.measurements?.continuityGround,
-      leakage: i.measurements?.leakageCurrent,
-      voltage: i.measurements?.voltage,
-      phase: i.measurements?.phase,
-      ppe: `${ppeCount}/5`,
-      status: i.overallStatus || '',
-      risk,
-      eng: i.engineerApproval || 'รอ',
-      notes: i.engineerNotes || '',
-    });
-
-    // Ground Resistance — red if > 5Ω
-    const gCell = row.getCell('ground');
-    if ((i.measurements?.groundResistance ?? 0) > 5) {
-      gCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFCA5A5' } };
-      gCell.font = { bold: true, color: { argb: 'FF991B1B' } };
-    }
-
-    // Status color
-    const sCell = row.getCell('status');
-    sCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: isFail ? 'FFFCA5A5' : 'FF86EFAC' } };
-    sCell.font = { bold: true };
-    sCell.alignment = { horizontal: 'center' };
-
-    // Risk color
-    const rCell = row.getCell('risk');
-    const rColor = risk === 'CRITICAL' ? 'FFEF4444' : risk === 'HIGH' ? 'FFFB923C' : risk === 'MEDIUM' ? 'FFFBBF24' : 'FF4ADE80';
-    rCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: rColor } };
-    rCell.font = { bold: true, color: { argb: risk === 'LOW' ? 'FF166534' : 'FFFFFFFF' } };
-    rCell.alignment = { horizontal: 'center' };
-
-    row.eachCell(cell => {
-      cell.border = { bottom: { style: 'hair', color: { argb: 'FFE2E8F0' } } };
-    });
-    row.height = 20;
-  });
-
-  // Freeze header
-  ws.views = [{ state: 'frozen', ySplit: 1 }];
-  ws.autoFilter = { from: 'A1', to: 'P1' };
-
-  // ── Sheet 2: สรุปรายช่าง ───────────────────────────────────────────────────
-  const ws2 = wb.addWorksheet('สรุปรายช่าง');
-  const techMap = {};
-  data.forEach(i => {
-    const k = `${i.technicianName} (${i.technicianId})`;
-    if (!techMap[k]) techMap[k] = { total: 0, pass: 0, fail: 0, high: 0 };
-    techMap[k].total++;
-    if (i.overallStatus === 'PASS') techMap[k].pass++;
-    else techMap[k].fail++;
-    if (['HIGH','CRITICAL'].includes(i.aiReport?.riskLevel)) techMap[k].high++;
-  });
-  ws2.columns = [
-    { header: 'ช่าง', key: 'tech', width: 20 },
-    { header: 'ทั้งหมด', key: 'total', width: 10 },
-    { header: 'ผ่าน', key: 'pass', width: 10 },
-    { header: 'ไม่ผ่าน', key: 'fail', width: 10 },
-    { header: '% ผ่าน', key: 'pct', width: 10 },
-    { header: 'HIGH Risk', key: 'high', width: 12 },
-  ];
-  ws2.getRow(1).eachCell(c => {
-    c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E3A5F' } };
-    c.font = { bold: true, color: { argb: 'FFFFFFFF' } };
-    c.alignment = { horizontal: 'center' };
-  });
-  Object.entries(techMap).forEach(([tech, s]) => {
-    const pct = s.total ? Math.round(s.pass / s.total * 100) : 0;
-    const r = ws2.addRow({ tech, total: s.total, pass: s.pass, fail: s.fail, pct: pct + '%', high: s.high });
-    r.getCell('pct').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: pct >= 80 ? 'FF86EFAC' : pct >= 60 ? 'FFFBBF24' : 'FFFCA5A5' } };
-    r.getCell('fail').font = s.fail > 0 ? { color: { argb: 'FFB91C1C' }, bold: true } : {};
-  });
-
-  const dateStr = new Date().toISOString().slice(0,10);
-  const fileName = `AuditEE-${dateStr}.xlsx`;
-
-  // Generate buffer once — use for both local save AND response
-  const buffer = await wb.xlsx.writeBuffer();
-
-  // Save a copy to local export/ folder
   try {
-    const localPath = path.join(EXPORTS_DIR, fileName);
-    fs.writeFileSync(localPath, buffer);
-    console.log(`[EXPORT] Saved local copy → ${localPath}`);
-  } catch (e) { console.warn('[EXPORT] Local save failed:', e.message); }
+    const [data, settings] = await Promise.all([Inspection.find({}).sort({createdAt:-1}).lean(), getSettings()]);
+    const wb = new ExcelJS.Workbook();
+    wb.creator = settings.engineerName || 'Audit-EE';
+    wb.created = new Date();
 
-  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-  res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
-  res.send(buffer);
-  res.end();
+    const ws = wb.addWorksheet('รายงานการตรวจสอบ');
+    ws.columns = [
+      {header:'วันที่ตรวจ',key:'date',width:14},{header:'Code ID',key:'codeId',width:10},
+      {header:'ชื่อสถานที่',key:'name',width:28},{header:'ที่ตั้ง',key:'location',width:30},
+      {header:'ช่าง',key:'tech',width:12},{header:'รหัสช่าง',key:'techId',width:10},
+      {header:'Ground(Ω)',key:'ground',width:12},{header:'Continuity(Ω)',key:'continuity',width:14},
+      {header:'Leakage(mA)',key:'leakage',width:13},{header:'Voltage(V)',key:'voltage',width:12},
+      {header:'Phase',key:'phase',width:8},{header:'PPE',key:'ppe',width:8},
+      {header:'ผล',key:'status',width:10},{header:'Risk',key:'risk',width:10},
+      {header:'วิศวกรอนุมัติ',key:'eng',width:14},{header:'หมายเหตุ',key:'notes',width:30}
+    ];
+    ws.getRow(1).eachCell(cell => {
+      cell.fill = {type:'pattern',pattern:'solid',fgColor:{argb:'FF1E3A5F'}};
+      cell.font = {bold:true,color:{argb:'FFFFFFFF'},size:11};
+      cell.alignment = {vertical:'middle',horizontal:'center',wrapText:true};
+    });
+    ws.getRow(1).height = 28;
+
+    data.forEach(i => {
+      const ppeCount = Object.values(i.ppeChecklist||{}).filter(Boolean).length;
+      const risk     = i.aiReport?.riskLevel || '';
+      const row = ws.addRow({
+        date: i.createdAt ? new Date(i.createdAt).toISOString().slice(0,10) : '',
+        codeId: i.codeId, name: i.locationInfo?.name||'', location: i.locationInfo?.location||'',
+        tech: i.technicianName, techId: i.technicianId,
+        ground: i.measurements?.groundResistance, continuity: i.measurements?.continuityGround,
+        leakage: i.measurements?.leakageCurrent, voltage: i.measurements?.voltage,
+        phase: i.measurements?.phase, ppe: `${ppeCount}/5`,
+        status: i.overallStatus||'', risk, eng: i.engineerApproval||'รอ', notes: i.engineerNotes||''
+      });
+      const gc = row.getCell('ground');
+      if ((i.measurements?.groundResistance??0) > 5) {
+        gc.fill = {type:'pattern',pattern:'solid',fgColor:{argb:'FFFCA5A5'}};
+        gc.font = {bold:true,color:{argb:'FF991B1B'}};
+      }
+      const sc = row.getCell('status');
+      sc.fill = {type:'pattern',pattern:'solid',fgColor:{argb:i.overallStatus==='FAIL'?'FFFCA5A5':'FF86EFAC'}};
+      sc.font = {bold:true}; sc.alignment = {horizontal:'center'};
+      const rc = row.getCell('risk');
+      rc.fill = {type:'pattern',pattern:'solid',fgColor:{argb:risk==='CRITICAL'?'FFEF4444':risk==='HIGH'?'FFFB923C':risk==='MEDIUM'?'FFFBBF24':'FF4ADE80'}};
+      rc.font = {bold:true,color:{argb:risk==='LOW'?'FF166534':'FFFFFFFF'}}; rc.alignment={horizontal:'center'};
+      row.eachCell(c => { c.border={bottom:{style:'hair',color:{argb:'FFE2E8F0'}}}; });
+      row.height = 20;
+    });
+    ws.views = [{state:'frozen',ySplit:1}];
+    ws.autoFilter = {from:'A1',to:'P1'};
+
+    const ws2 = wb.addWorksheet('สรุปรายช่าง');
+    const techMap = {};
+    data.forEach(i => {
+      const k = `${i.technicianName} (${i.technicianId})`;
+      if (!techMap[k]) techMap[k] = {total:0,pass:0,fail:0,high:0};
+      techMap[k].total++;
+      if (i.overallStatus==='PASS') techMap[k].pass++; else techMap[k].fail++;
+      if (['HIGH','CRITICAL'].includes(i.aiReport?.riskLevel)) techMap[k].high++;
+    });
+    ws2.columns = [{header:'ช่าง',key:'tech',width:20},{header:'ทั้งหมด',key:'total',width:10},
+      {header:'ผ่าน',key:'pass',width:10},{header:'ไม่ผ่าน',key:'fail',width:10},
+      {header:'% ผ่าน',key:'pct',width:10},{header:'HIGH Risk',key:'high',width:12}];
+    ws2.getRow(1).eachCell(c => {
+      c.fill={type:'pattern',pattern:'solid',fgColor:{argb:'FF1E3A5F'}};
+      c.font={bold:true,color:{argb:'FFFFFFFF'}}; c.alignment={horizontal:'center'};
+    });
+    Object.entries(techMap).forEach(([tech,s]) => {
+      const pct = s.total ? Math.round(s.pass/s.total*100) : 0;
+      const r   = ws2.addRow({tech,total:s.total,pass:s.pass,fail:s.fail,pct:pct+'%',high:s.high});
+      r.getCell('pct').fill={type:'pattern',pattern:'solid',fgColor:{argb:pct>=80?'FF86EFAC':pct>=60?'FFFBBF24':'FFFCA5A5'}};
+    });
+
+    const dateStr  = new Date().toISOString().slice(0,10);
+    const fileName = `AuditEE-${dateStr}.xlsx`;
+    const filePath = path.join(EXPORTS_DIR, fileName);
+    const buffer   = await wb.xlsx.writeBuffer();
+
+    // บันทึกลง local เสมอ
+    fs.writeFileSync(filePath, buffer);
+    console.log(`📊 Export saved: export\\${fileName}`);
+
+    // ส่งให้ browser download เสมอ + บันทึก local ไว้ด้วย
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+    res.setHeader('X-Saved-Path', `export\\${fileName}`);
+    res.send(buffer);
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Export inspections as CSV
-app.get('/api/export/csv', (req, res) => {
-  const data = readJSON('inspections.json');
-  const header = ['ID', 'Date', 'Code ID', 'Location', 'Technician', 'Tech ID', 'Ground(Ω)', 'Continuity(Ω)', 'Leakage(mA)', 'Voltage(V)', 'Phase', 'PPE', 'Status', 'Risk', 'Engineer Approval'];
-  const rows = data.map(i => [
-    i.id, i.createdAt?.slice(0, 10), i.codeId,
-    (i.locationInfo?.name || ''), i.technicianName, i.technicianId,
-    i.measurements?.groundResistance, i.measurements?.continuityGround,
-    i.measurements?.leakageCurrent, i.measurements?.voltage, i.measurements?.phase,
-    Object.values(i.ppeChecklist || {}).filter(Boolean).length + '/5',
-    i.overallStatus, i.aiReport?.riskLevel || '', i.engineerApproval || ''
-  ]);
-  const csv = [header, ...rows].map(r => r.map(c => `"${c ?? ''}"`).join(',')).join('\n');
-  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-  res.setHeader('Content-Disposition', `attachment; filename="audit-ee-${Date.now()}.csv"`);
-  res.send('﻿' + csv); // BOM for Excel
+// Export CSV
+app.get('/api/export/csv', async (req, res) => {
+  try {
+    const data   = await Inspection.find({}).sort({createdAt:-1}).lean();
+    const header = ['ID','Date','Code ID','Location','Technician','Tech ID','Ground(Ω)','Continuity(Ω)','Leakage(mA)','Voltage(V)','Phase','PPE','Status','Risk','Engineer Approval'];
+    const rows   = data.map(i => [
+      i.id, new Date(i.createdAt).toISOString().slice(0,10), i.codeId,
+      i.locationInfo?.name||'', i.technicianName, i.technicianId,
+      i.measurements?.groundResistance, i.measurements?.continuityGround,
+      i.measurements?.leakageCurrent, i.measurements?.voltage, i.measurements?.phase,
+      Object.values(i.ppeChecklist||{}).filter(Boolean).length+'/5',
+      i.overallStatus, i.aiReport?.riskLevel||'', i.engineerApproval||''
+    ]);
+    const csv = [header,...rows].map(r=>r.map(c=>`"${c??''}"`).join(',')).join('\n');
+    res.setHeader('Content-Type','text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition',`attachment; filename="audit-ee-${Date.now()}.csv"`);
+    res.send('﻿'+csv);
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ─── network info ──────────────────────────────────────────────────────────────
-const os = require('os');
+// Cloudinary status check
+app.get('/api/cloudinary/usage', async (req, res) => {
+  try {
+    const ping = await cloudinary.api.ping();
+    res.json({ status: ping.status, cloud_name: cloudinary.config().cloud_name, connected: true });
+  } catch (e) { res.status(500).json({ error: e.message, connected: false }); }
+});
+
+// Network info
 function getLocalIP() {
   const ifaces = os.networkInterfaces();
   for (const name of Object.keys(ifaces)) {
     for (const iface of ifaces[name]) {
-      if (iface.family === 'IPv4' && !iface.internal) return iface.address;
+      if (iface.family==='IPv4' && !iface.internal) return iface.address;
     }
   }
   return 'localhost';
 }
+app.get('/api/network-info', (req, res) => res.json({ ip: getLocalIP(), port: PORT }));
 
-app.get('/api/network-info', (req, res) => {
-  res.json({ ip: getLocalIP(), port: PORT });
-});
-
-// ─── start ─────────────────────────────────────────────────────────────────────
+// ─── Start ────────────────────────────────────────────────────────────────────
 app.listen(PORT, '0.0.0.0', () => {
-  const localIP = getLocalIP();
-  console.log(`\n╔══════════════════════════════════════════════╗`);
-  console.log(`║  🔌 Audit-EE  |  Plan B Media               ║`);
-  console.log(`║  💻 PC:     http://localhost:${PORT}              ║`);
-  console.log(`║  📱 มือถือ: http://${localIP}:${PORT}       ║`);
-  console.log(`╚══════════════════════════════════════════════╝\n`);
+  const ip = getLocalIP();
+  console.log(`\n╔══════════════════════════════════════════════════╗`);
+  console.log(`║  ⚡ Audit-EE  |  Plan B Media                    ║`);
+  console.log(`║  💻 PC:     http://localhost:${PORT}                ║`);
+  console.log(`║  📱 มือถือ: http://${ip}:${PORT}           ║`);
+  console.log(`║  ☁️  DB:     MongoDB Atlas (shared)               ║`);
+  console.log(`║  🖼️  Photos: Cloudinary (auto-delete 3 months)   ║`);
+  console.log(`╚══════════════════════════════════════════════════╝\n`);
+  if (!process.env.CLOUDINARY_API_SECRET || process.env.CLOUDINARY_API_SECRET.includes('ใส่')) {
+    console.log('⚠️  CLOUDINARY_API_SECRET ยังไม่ได้ตั้งค่า — ใส่ใน .env');
+  }
   if (!process.env.ANTHROPIC_API_KEY) {
     console.log('⚠️  ANTHROPIC_API_KEY ไม่ได้ตั้งค่า — ไปที่ Settings ในแอป');
   }

@@ -128,6 +128,15 @@ body{background:var(--bg);color:var(--txt);font-family:'Segoe UI',sans-serif;dis
     <div class="nav-item" data-nav="masterdata" onclick="showView('masterdata')"><i class="fa-solid fa-location-dot"></i>Master Data ป้าย</div>
     <div class="nav-item" data-nav="settings" onclick="showView('settings')"><i class="fa-solid fa-gear"></i>Settings</div>
   </nav>
+  <!-- QR Code -->
+  <div style="padding:12px 16px;border-top:1px solid rgba(255,255,255,.1)">
+    <div style="font-size:.68rem;color:#64748b;margin-bottom:6px;display:flex;align-items:center;justify-content:space-between">
+      <span>📱 เปิดบนมือถือ</span>
+      <span id="qrIpText" style="color:#93c5fd;font-weight:600"></span>
+    </div>
+    <canvas id="qrCanvas" style="width:100%;border-radius:8px;background:#fff;padding:4px;display:block"></canvas>
+    <div id="qrNoNet" style="display:none;font-size:.68rem;color:#64748b;text-align:center;padding:8px">ไม่พบ IP เครือข่าย</div>
+  </div>
   <div class="sb-footer">v1.0 &nbsp;|&nbsp; Plan B Media © 2025</div>
 </aside>
 
@@ -510,7 +519,7 @@ body{background:var(--bg);color:var(--txt);font-family:'Segoe UI',sans-serif;dis
       <p style="color:var(--muted);font-size:.82rem;margin-top:2px">บันทึกการตรวจระบบไฟฟ้าทั้งหมด</p>
     </div>
     <div style="display:flex;gap:8px">
-      <a href="/api/export/excel" class="btn btn-primary" style="text-decoration:none"><i class="fa-solid fa-file-excel"></i> Export Excel</a>
+      <a href="/api/export/excel" class="btn btn-primary" style="text-decoration:none" onclick="setTimeout(()=>toast('✅ บันทึกแล้วที่ export\\ และกำลัง download...','ok'),500)"><i class="fa-solid fa-file-excel"></i> Export Excel</a>
       <a href="/api/export/csv" class="btn btn-ghost" style="text-decoration:none"><i class="fa-solid fa-file-csv"></i> CSV</a>
     </div>
   </div>
@@ -758,6 +767,46 @@ function toast(msg, type = 'info') {
   t.appendChild(el);
   t.style.display = 'block';
   setTimeout(() => { el.remove(); if (!t.children.length) t.style.display = 'none'; }, 4000);
+}
+
+// ═══════════════════ QR CODE ═══════════════════
+async function initQR() {
+  try {
+    const info = await fetch('/api/network-info').then(r => r.json());
+    const ip   = info.ip;
+    const port = info.port || 3000;
+    if (!ip || ip === 'localhost') { document.getElementById('qrNoNet').style.display='block'; return; }
+    const url = `http://${ip}:${port}`;
+    document.getElementById('qrIpText').textContent = `${ip}:${port}`;
+    const canvas = document.getElementById('qrCanvas');
+    QRCode.toCanvas(canvas, url, {
+      width: 188, margin: 1,
+      color: { dark: '#0f172a', light: '#ffffff' }
+    });
+  } catch(e) { document.getElementById('qrNoNet').style.display='block'; }
+}
+
+// ═══════════════════ EXPORT EXCEL ═══════════════════
+async function exportExcel() {
+  try {
+    toast('กำลัง Export...', 'ok');
+    const res = await fetch('/api/export/excel');
+    const data = await res.json();
+    if (data.success) {
+      // แสดง toast พร้อมปุ่ม download
+      const div = document.createElement('div');
+      div.className = 'toast-msg toast-ok';
+      div.innerHTML = `✅ บันทึกแล้วที่ <strong>${data.savedAt}</strong> &nbsp;
+        <a href="/api/export/excel?download=1" style="color:#4ade80;font-weight:700;margin-left:8px">
+          <i class="fa-solid fa-download"></i> Download
+        </a>`;
+      document.getElementById('toast').appendChild(div);
+      document.getElementById('toast').style.display = 'block';
+      setTimeout(() => { div.remove(); if (!document.getElementById('toast').children.length) document.getElementById('toast').style.display='none'; }, 6000);
+    } else {
+      toast(data.error || 'Export ล้มเหลว', 'err');
+    }
+  } catch (e) { toast('Export ล้มเหลว: ' + e.message, 'err'); }
 }
 
 // ═══════════════════ API HELPERS ═══════════════════
@@ -1686,9 +1735,10 @@ async function openDetail(id) {
     const ppeList = ['helmet','gloves','safetyShoes','vest','glasses'];
     const ppeThai = ['หมวก','ถุงมือ','รองเท้า','เสื้อ','แว่น'];
     const ppeStr = ppeList.map((k,i) => (r.ppeChecklist?.[k] ? '✓' : '✗') + ppeThai[i]).join(' ');
-    const photos = r.photoFiles?.map(f =>
-      `<img src="/uploads/${f}" style="width:80px;height:80px;object-fit:cover;border-radius:6px;border:1px solid var(--bd)">`
-    ).join('') || '';
+    const photos = (r.photoFiles || []).map(f => {
+      const src = (typeof f === 'object') ? f.url : (f.startsWith('http') ? f : `/uploads/${f}`);
+      return src ? `<a href="${src}" target="_blank"><img src="${src}" style="width:80px;height:80px;object-fit:cover;border-radius:6px;border:1px solid var(--bd);cursor:pointer"></a>` : '';
+    }).join('') || '';
 
     document.getElementById('modalTitle').textContent = `รายงานตรวจสอบ — ${r.codeId} | ${r.technicianName}`;
     document.getElementById('modalBody').innerHTML = `
@@ -1749,6 +1799,7 @@ async function init() {
   await loadMaster();
   loadDashboard();
   populateCodeIdDropdown();
+  initQR();
 }
 init();
 </script>

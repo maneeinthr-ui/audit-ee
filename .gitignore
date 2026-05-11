@@ -3,5 +3,7 @@ node_modules/
 uploads/
 data/inspections.json
 data/settings.json
+export/
+logs/
 *.log
 *.err
