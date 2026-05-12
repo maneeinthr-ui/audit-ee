@@ -167,11 +167,11 @@ body{background:var(--bg);color:var(--txt);font-family:'Segoe UI',sans-serif;dis
       <div><div class="stat-val" id="st-total">0</div><div class="stat-label">ตรวจทั้งหมด</div></div>
     </div>
     <div class="stat-card" style="cursor:pointer;transition:transform .15s,box-shadow .15s"
-         onclick="goHistory({status:'PASS'})" onmouseover="this.style.transform='translateY(-2px)';this.style.boxShadow='0 6px 16px rgba(16,185,129,.25)'"
+         onclick="goHistory({approval:'APPROVED'})" onmouseover="this.style.transform='translateY(-2px)';this.style.boxShadow='0 6px 16px rgba(16,185,129,.25)'"
          onmouseout="this.style.transform='';this.style.boxShadow=''"
-         title="ผ่านมาตรฐาน วสท. (AI ตรวจรับรอง) — คลิกเพื่อดูเฉพาะ PASS">
-      <div class="stat-icon" style="background:rgba(16,185,129,.15);color:var(--ok)"><i class="fa-solid fa-circle-check"></i></div>
-      <div><div class="stat-val" id="st-pass-cnt" style="color:var(--ok)">0</div><div class="stat-label">PASS</div></div>
+         title="วิศวกรอนุมัติแล้ว — รายการที่วิศวกรเซ็นรับรอง APPROVED — คลิกเพื่อดู">
+      <div class="stat-icon" style="background:rgba(16,185,129,.15);color:var(--ok)"><i class="fa-solid fa-user-check"></i></div>
+      <div><div class="stat-val" id="st-approved-cnt" style="color:var(--ok)">0</div><div class="stat-label">วิศวกรอนุมัติ</div></div>
     </div>
     <div class="stat-card" style="cursor:pointer;transition:transform .15s,box-shadow .15s"
          onclick="goHistory({status:'FAIL'})" onmouseover="this.style.transform='translateY(-2px)';this.style.boxShadow='0 6px 16px rgba(239,68,68,.25)'"
@@ -181,11 +181,11 @@ body{background:var(--bg);color:var(--txt);font-family:'Segoe UI',sans-serif;dis
       <div><div class="stat-val" id="st-fail-cnt" style="color:#ef4444">0</div><div class="stat-label">FAIL</div></div>
     </div>
     <div class="stat-card" style="cursor:pointer;transition:transform .15s,box-shadow .15s"
-         onclick="goHistory({status:'PENDING'})" onmouseover="this.style.transform='translateY(-2px)';this.style.boxShadow='0 6px 16px rgba(148,163,184,.25)'"
+         onclick="goHistory({approval:'AWAITING'})" onmouseover="this.style.transform='translateY(-2px)';this.style.boxShadow='0 6px 16px rgba(148,163,184,.25)'"
          onmouseout="this.style.transform='';this.style.boxShadow=''"
-         title="บันทึกแล้ว แต่ยังไม่ได้รัน AI วิเคราะห์ — คลิกเพื่อดูเฉพาะ PENDING">
+         title="รอวิศวกรพิจารณา — ยังไม่ได้ Approve/Reject — คลิกเพื่อดูรายการที่ต้องดำเนินการ">
       <div class="stat-icon" style="background:rgba(148,163,184,.15);color:#94a3b8"><i class="fa-solid fa-hourglass-half"></i></div>
-      <div><div class="stat-val" id="st-pending-cnt" style="color:#94a3b8">0</div><div class="stat-label">รอตรวจ</div></div>
+      <div><div class="stat-val" id="st-awaiting-cnt" style="color:#94a3b8">0</div><div class="stat-label">รออนุมัติ</div></div>
     </div>
     <div class="stat-card" style="cursor:pointer;transition:transform .15s,box-shadow .15s"
          onclick="goHistory({risk:'HIGH_CRITICAL'})" onmouseover="this.style.transform='translateY(-2px)';this.style.boxShadow='0 6px 16px rgba(220,38,38,.25)'"
@@ -887,6 +887,8 @@ function goHistory(opts) {
 
     // ตั้ง filter ใหม่
     if (opts.status && fStatus) fStatus.value = opts.status;
+    // approval filter (APPROVED / REJECTED / AWAITING) → เก็บใน App state
+    App.approvalFilter = opts.approval || null;
     if (opts.risk === 'HIGH_CRITICAL') {
       // เก็บไว้ใน window state ให้ loadHistory ใช้
       App.riskMulti = 'HIGH,CRITICAL';
@@ -911,14 +913,15 @@ function goHistory(opts) {
 async function loadDashboard() {
   try {
     const d = await api('GET', '/api/dashboard');
-    const s = d.byStatus || { PASS: 0, FAIL: 0, PENDING: 0 };
-    const r = d.byRisk   || { LOW: 0, MEDIUM: 0, HIGH: 0, CRITICAL: 0 };
-    document.getElementById('st-total').textContent       = d.total;
-    document.getElementById('st-pass-cnt').textContent    = s.PASS    || 0;
-    document.getElementById('st-fail-cnt').textContent    = s.FAIL    || 0;
-    document.getElementById('st-pending-cnt').textContent = s.PENDING || 0;
-    document.getElementById('st-risk-cnt').textContent    = (r.HIGH || 0) + (r.CRITICAL || 0);
-    document.getElementById('st-month').textContent       = d.thisMonth;
+    const s = d.byStatus   || { PASS: 0, FAIL: 0, PENDING: 0 };
+    const r = d.byRisk     || { LOW: 0, MEDIUM: 0, HIGH: 0, CRITICAL: 0 };
+    const a = d.byApproval || { APPROVED: 0, REJECTED: 0, AWAITING: 0 };
+    document.getElementById('st-total').textContent        = d.total;
+    document.getElementById('st-approved-cnt').textContent = a.APPROVED || 0;
+    document.getElementById('st-fail-cnt').textContent     = s.FAIL     || 0;
+    document.getElementById('st-awaiting-cnt').textContent = a.AWAITING || 0;
+    document.getElementById('st-risk-cnt').textContent     = (r.HIGH || 0) + (r.CRITICAL || 0);
+    document.getElementById('st-month').textContent        = d.thisMonth;
 
     if (d.lastSheetSync) {
       const dt = new Date(d.lastSheetSync).toLocaleString('th-TH', { timeZone: 'Asia/Bangkok' });
@@ -1592,6 +1595,7 @@ async function loadHistory() {
   } else if (App.riskMulti) {
     params.set('risk', App.riskMulti);
   }
+  if (App.approvalFilter) params.set('approval', App.approvalFilter);
   if (tech) params.set('techId', tech);
   try {
     const data = await fetch('/api/inspections?' + params).then(r => r.json());

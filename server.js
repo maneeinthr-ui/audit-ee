@@ -389,7 +389,7 @@ app.post('/api/master/import', uploadCSV.single('csv'), async (req, res) => {
 // ── Inspections ───────────────────────────────────────────────────────────────
 app.get('/api/inspections', async (req, res) => {
   try {
-    const { status, techId, codeId, from, to, risk } = req.query;
+    const { status, techId, codeId, from, to, risk, approval } = req.query;
     const filter = {};
     if (status) filter.overallStatus = status;
     if (techId) filter.technicianId  = techId;
@@ -398,6 +398,12 @@ app.get('/api/inspections', async (req, res) => {
       // รองรับหลายค่า: "HIGH,CRITICAL" → $in
       const arr = String(risk).split(',').filter(Boolean);
       filter['aiReport.riskLevel'] = arr.length > 1 ? { $in: arr } : arr[0];
+    }
+    // กรองตามสถานะวิศวกร: APPROVED / REJECTED / AWAITING (null)
+    if (approval === 'AWAITING') {
+      filter.$or = [{ engineerApproval: null }, { engineerApproval: { $exists: false } }];
+    } else if (approval) {
+      filter.engineerApproval = approval;
     }
     if (from || to) {
       filter.createdAt = {};
@@ -617,9 +623,10 @@ app.get('/api/dashboard', async (req, res) => {
       Inspection.find({}).sort({ createdAt: -1 }).lean(),
       getSettings()
     ]);
-    const now     = new Date();
+    const now      = new Date();
     const byStatus = { PASS:0, FAIL:0, PENDING:0 };
     const byRisk   = { LOW:0, MEDIUM:0, HIGH:0, CRITICAL:0 };
+    const byApproval = { APPROVED:0, REJECTED:0, AWAITING:0 };
     const monthly  = {};
     let thisMonth  = 0;
 
@@ -628,6 +635,10 @@ app.get('/api/dashboard', async (req, res) => {
       byStatus[s] = (byStatus[s]||0) + 1;
       const r = i.aiReport?.riskLevel || 'MEDIUM';
       byRisk[r]   = (byRisk[r]||0) + 1;
+      // นับสถานะวิศวกร: APPROVED / REJECTED / AWAITING (ยังไม่ดำเนินการ)
+      if (i.engineerApproval === 'APPROVED')      byApproval.APPROVED++;
+      else if (i.engineerApproval === 'REJECTED') byApproval.REJECTED++;
+      else                                          byApproval.AWAITING++;
       const d = new Date(i.createdAt);
       if (d.getMonth()===now.getMonth() && d.getFullYear()===now.getFullYear()) thisMonth++;
       const key = new Date(i.createdAt).toISOString().slice(0,7);
@@ -641,6 +652,7 @@ app.get('/api/dashboard', async (req, res) => {
       thisMonth,
       byStatus,
       byRisk,
+      byApproval,    // ← ใหม่: สถิติการอนุมัติของวิศวกร
       monthly:  Object.entries(monthly).sort().slice(-6).map(([month,count])=>({ month,count })),
       lastSheetSync: settings.lastSheetSync,
       recent:   data.slice(0, 8)
