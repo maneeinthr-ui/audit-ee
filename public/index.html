@@ -502,7 +502,8 @@ body{background:var(--bg);color:var(--txt);font-family:'Segoe UI',sans-serif;dis
         <div class="rs-row"><span class="rs-key">ตรงกับที่บันทึก</span><span id="rOcrMatch" class="rs-val">—</span></div>
         <div class="rs-row"><span class="rs-key">มาตรฐาน วสท.</span><span id="rStd" class="rs-val">—</span></div>
         <div class="rs-row"><span class="rs-key">รายละเอียดมาตรฐาน</span><span id="rStdDetail" class="rs-val">—</span></div>
-        <div class="rs-row"><span class="rs-key">พิกัดสถานที่</span><span id="rLoc" class="rs-val">—</span></div>
+        <div class="rs-row"><span class="rs-key">พิกัดสถานที่ (AI)</span><span id="rLoc" class="rs-val">—</span></div>
+        <div class="rs-row"><span class="rs-key">📍 GPS Validation</span><span id="rGps" class="rs-val">—</span></div>
         <div class="rs-row"><span class="rs-key">สถานะ MDB</span><span id="rMdb" class="rs-val">—</span></div>
       </div>
       <!-- Section 2 -->
@@ -1430,6 +1431,20 @@ function renderAIReport(r) {
   set('rStd', passFailBadge(r.standardCheck));
   set('rStdDetail', r.standardDetail || '—');
   set('rLoc', r.locationCheck ? `<span class="badge ${r.locationCheck==='ผ่าน'?'b-green':'b-yellow'}">${r.locationCheck}</span> ${r.locationDetail||''}` : '—');
+  // GPS Validation
+  if (r.gpsValidation) {
+    const gv = r.gpsValidation;
+    const gBadge = gv.status === 'PASS'   ? 'b-green'
+                 : gv.status === 'FAIL'   ? 'b-red'
+                 : gv.status === 'NO_GPS' ? 'b-orange' : 'b-gray';
+    const gLabel = gv.status === 'PASS'   ? '✅ ผ่าน'
+                 : gv.status === 'FAIL'   ? '❌ ไม่ผ่าน'
+                 : gv.status === 'NO_GPS' ? '⚠️ ไม่มี GPS'  : '— ไม่มีพิกัดอ้างอิง';
+    const distTxt = gv.distance != null ? ` ห่าง <strong>${gv.distance} ม.</strong>` : '';
+    set('rGps', `<span class="badge ${gBadge}">${gLabel}</span>${distTxt} <small style="color:#888">${gv.detail||''}</small>`);
+  } else {
+    set('rGps', '<span class="badge b-gray">ยังไม่ได้ตรวจสอบ</span>');
+  }
   set('rMdb', r.mdbStatus ? `<span class="badge ${r.mdbStatus==='ผ่าน'?'b-green':r.mdbStatus==='ไม่ผ่าน'?'b-red':'b-gray'}">${r.mdbStatus}</span> ${r.mdbDetail||''}` : '—');
 
   const riskColors = { LOW: 'b-green', MEDIUM: 'b-yellow', HIGH: 'b-orange', CRITICAL: 'b-critical' };

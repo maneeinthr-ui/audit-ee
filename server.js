@@ -67,7 +67,10 @@ const masterSchema = new mongoose.Schema({
   location:  String,
   mediaType: String,
   phase:     { type: String, default: '1P' },
-  region:    String
+  region:    String,
+  road:      String,
+  lat:       Number,   // Co_Y Latitude
+  lng:       Number    // Co_X Longitude
 });
 
 const settingsSchema = new mongoose.Schema({
@@ -78,7 +81,7 @@ const settingsSchema = new mongoose.Schema({
   sheetsUrl:     String,
   lineChannelToken: String,
   lineTargetId:  String,
-  columnMapping: { type: Object, default: { codeId: 0, name: 1, location: 2, mediaType: 3, phase: 4, region: 5 } },
+  columnMapping: { type: Object, default: { mediaType: 0, codeId: 1, name: 2, road: 3, region: 4, lat: 5, lng: 6, phase: -1 } },
   lastSheetSync: Date,
   adminPin:      String,
   anthropicKey:  String
@@ -227,6 +230,30 @@ async function getAnthropic() {
   return new Anthropic({ apiKey: key });
 }
 
+// ─── GPS Haversine Distance (เมตร) ────────────────────────────────────────────
+function haversineMeters(lat1, lng1, lat2, lng2) {
+  const R = 6371000;
+  const toRad = x => x * Math.PI / 180;
+  const dLat  = toRad(lat2 - lat1);
+  const dLng  = toRad(lng2 - lng1);
+  const a = Math.sin(dLat/2)**2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng/2)**2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function validateGPS(techGps, billboard) {
+  if (!billboard?.lat || !billboard?.lng) return { status: 'NO_REF', detail: 'ยังไม่มีพิกัดอ้างอิงป้ายนี้ใน Master Data' };
+  if (!techGps?.lat || !techGps?.lng)     return { status: 'NO_GPS', detail: 'ช่างไม่ได้เปิด GPS' };
+  const dist = Math.round(haversineMeters(techGps.lat, techGps.lng, billboard.lat, billboard.lng));
+  const pass = dist <= 200;
+  return {
+    status: pass ? 'PASS' : 'FAIL',
+    distance: dist,
+    detail: pass
+      ? `✅ อยู่ห่างป้าย ${dist} เมตร (≤200m ผ่าน)`
+      : `❌ อยู่ห่างป้าย ${dist} เมตร (เกิน 200m — ช่างอาจไม่ได้อยู่หน้างาน)`
+  };
+}
+
 function buildPrompt(d) {
   const loc = d.locationInfo || {};
   const m   = d.measurements || {};
@@ -352,17 +379,25 @@ app.post('/api/master/sync', async (req, res) => {
     const csvText  = Buffer.from(response.data).toString('utf8');
     const records  = csvParse(csvText, { skip_empty_lines: true, relax_column_count: true });
     const mapping  = settings.columnMapping || { codeId:0,name:1,location:2,mediaType:3,phase:4,region:5 };
-    const items    = records.slice(1).map(row => ({
+    const items    = records.slice(1).map(row => {
+      const latVal = mapping.lat >= 0 ? parseFloat(row[mapping.lat]) : NaN;
+      const lngVal = mapping.lng >= 0 ? parseFloat(row[mapping.lng]) : NaN;
+      return {
       id: uuidv4(), codeId: String(row[mapping.codeId]||'').trim(),
       name: String(row[mapping.name]||'').trim(), location: String(row[mapping.location]||'').trim(),
-      mediaType: String(row[mapping.mediaType]||'').trim(), phase: String(row[mapping.phase]||'1P').trim(),
-      region: String(row[mapping.region]||'').trim()
-    })).filter(r => r.codeId);
+      mediaType: String(row[mapping.mediaType]||'').trim(),
+      phase: mapping.phase >= 0 ? String(row[mapping.phase]||'1P').trim() : '1P',
+      region: String(row[mapping.region >= 0 ? mapping.region : 5]||'').trim(),
+      road: mapping.road >= 0 ? String(row[mapping.road]||'').trim() : '',
+      lat: isNaN(latVal) ? undefined : latVal,
+      lng: isNaN(lngVal) ? undefined : lngVal
+    };}).filter(r => r.codeId);
     await Master.deleteMany({});
     if (items.length > 0) await Master.insertMany(items);
     const syncedAt = new Date();
+    const withGps  = items.filter(i => i.lat && i.lng).length;
     await Settings.findOneAndUpdate({ key: 'main' }, { $set: { lastSheetSync: syncedAt, sheetsUrl: url } });
-    res.json({ success: true, count: items.length, syncedAt });
+    res.json({ success: true, count: items.length, withGps, syncedAt });
   } catch (e) { res.status(500).json({ error: `Sync ล้มเหลว: ${e.message}` }); }
 });
 
@@ -375,11 +410,19 @@ app.post('/api/master/import', uploadCSV.single('csv'), async (req, res) => {
     const settings = await getSettings();
     const mapping  = settings.columnMapping || { codeId:0,name:1,location:2,mediaType:3,phase:4,region:5 };
     const records  = csvParse(csvText, { skip_empty_lines: true, relax_column_count: true });
-    const items    = records.slice(1).map(row => ({
-      id: uuidv4(), codeId: String(row[mapping.codeId]||'').trim(), name: String(row[mapping.name]||'').trim(),
-      location: String(row[mapping.location]||'').trim(), mediaType: String(row[mapping.mediaType]||'').trim(),
-      phase: String(row[mapping.phase]||'1P').trim(), region: String(row[mapping.region]||'').trim()
-    })).filter(r => r.codeId);
+    const items    = records.slice(1).map(row => {
+      const latVal = mapping.lat >= 0 ? parseFloat(row[mapping.lat]) : NaN;
+      const lngVal = mapping.lng >= 0 ? parseFloat(row[mapping.lng]) : NaN;
+      return {
+        id: uuidv4(), codeId: String(row[mapping.codeId]||'').trim(), name: String(row[mapping.name]||'').trim(),
+        location: String(row[mapping.location]||'').trim(), mediaType: String(row[mapping.mediaType]||'').trim(),
+        phase: mapping.phase >= 0 ? String(row[mapping.phase]||'1P').trim() : '1P',
+        region: String(row[mapping.region >= 0 ? mapping.region : 5]||'').trim(),
+        road: mapping.road >= 0 ? String(row[mapping.road]||'').trim() : '',
+        lat: isNaN(latVal) ? undefined : latVal,
+        lng: isNaN(lngVal) ? undefined : lngVal
+      };
+    }).filter(r => r.codeId);
     await Master.deleteMany({});
     if (items.length > 0) await Master.insertMany(items);
     res.json({ success: true, count: items.length });
@@ -417,8 +460,16 @@ app.get('/api/inspections', async (req, res) => {
 
 app.post('/api/inspections', async (req, res) => {
   try {
+    // GPS Validation ก่อนบันทึก
+    const billboard = await Master.findOne({ codeId: req.body.codeId }).lean();
+    const gpsResult = validateGPS(req.body.gps, billboard);
+
+    // แทรก gpsValidation เข้า aiReport
+    const aiReport = { ...(req.body.aiReport || {}), gpsValidation: gpsResult };
+
     const rec = await Inspection.create({
       ...req.body,
+      aiReport,
       id: `INS-${Date.now()}`,
       overallStatus:    req.body.aiReport?.overallStatus || 'PENDING',
       engineerApproval: null,
