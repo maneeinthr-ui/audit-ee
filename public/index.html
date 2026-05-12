@@ -157,23 +157,49 @@ body{background:var(--bg);color:var(--txt);font-family:'Segoe UI',sans-serif;dis
     </div>
   </div>
 
-  <!-- Stat cards -->
-  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:20px">
-    <div class="stat-card">
+  <!-- Stat cards (6 ช่อง คลิกได้ + Tooltip) -->
+  <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:12px;margin-bottom:20px">
+    <div class="stat-card" style="cursor:pointer;transition:transform .15s,box-shadow .15s"
+         onclick="goHistory({})" onmouseover="this.style.transform='translateY(-2px)';this.style.boxShadow='0 6px 16px rgba(59,130,246,.25)'"
+         onmouseout="this.style.transform='';this.style.boxShadow=''"
+         title="จำนวนรายการตรวจทั้งหมดในระบบ — คลิกเพื่อดูรายการทั้งหมด">
       <div class="stat-icon" style="background:rgba(59,130,246,.15);color:var(--pri)"><i class="fa-solid fa-clipboard-list"></i></div>
-      <div><div class="stat-val" id="st-total">0</div><div class="stat-label">รายการตรวจทั้งหมด</div></div>
+      <div><div class="stat-val" id="st-total">0</div><div class="stat-label">ตรวจทั้งหมด</div></div>
     </div>
-    <div class="stat-card">
+    <div class="stat-card" style="cursor:pointer;transition:transform .15s,box-shadow .15s"
+         onclick="goHistory({status:'PASS'})" onmouseover="this.style.transform='translateY(-2px)';this.style.boxShadow='0 6px 16px rgba(16,185,129,.25)'"
+         onmouseout="this.style.transform='';this.style.boxShadow=''"
+         title="ผ่านมาตรฐาน วสท. (AI ตรวจรับรอง) — คลิกเพื่อดูเฉพาะ PASS">
       <div class="stat-icon" style="background:rgba(16,185,129,.15);color:var(--ok)"><i class="fa-solid fa-circle-check"></i></div>
-      <div><div class="stat-val" id="st-pass" style="color:var(--ok)">0%</div><div class="stat-label">อัตราผ่านมาตรฐาน</div></div>
+      <div><div class="stat-val" id="st-pass-cnt" style="color:var(--ok)">0</div><div class="stat-label">PASS</div></div>
     </div>
-    <div class="stat-card">
+    <div class="stat-card" style="cursor:pointer;transition:transform .15s,box-shadow .15s"
+         onclick="goHistory({status:'FAIL'})" onmouseover="this.style.transform='translateY(-2px)';this.style.boxShadow='0 6px 16px rgba(239,68,68,.25)'"
+         onmouseout="this.style.transform='';this.style.boxShadow=''"
+         title="ไม่ผ่านมาตรฐาน — ต้องแก้ไข — คลิกเพื่อดูเฉพาะ FAIL">
+      <div class="stat-icon" style="background:rgba(239,68,68,.15);color:#ef4444"><i class="fa-solid fa-circle-xmark"></i></div>
+      <div><div class="stat-val" id="st-fail-cnt" style="color:#ef4444">0</div><div class="stat-label">FAIL</div></div>
+    </div>
+    <div class="stat-card" style="cursor:pointer;transition:transform .15s,box-shadow .15s"
+         onclick="goHistory({status:'PENDING'})" onmouseover="this.style.transform='translateY(-2px)';this.style.boxShadow='0 6px 16px rgba(148,163,184,.25)'"
+         onmouseout="this.style.transform='';this.style.boxShadow=''"
+         title="บันทึกแล้ว แต่ยังไม่ได้รัน AI วิเคราะห์ — คลิกเพื่อดูเฉพาะ PENDING">
+      <div class="stat-icon" style="background:rgba(148,163,184,.15);color:#94a3b8"><i class="fa-solid fa-hourglass-half"></i></div>
+      <div><div class="stat-val" id="st-pending-cnt" style="color:#94a3b8">0</div><div class="stat-label">รอตรวจ</div></div>
+    </div>
+    <div class="stat-card" style="cursor:pointer;transition:transform .15s,box-shadow .15s"
+         onclick="goHistory({risk:'HIGH_CRITICAL'})" onmouseover="this.style.transform='translateY(-2px)';this.style.boxShadow='0 6px 16px rgba(220,38,38,.25)'"
+         onmouseout="this.style.transform='';this.style.boxShadow=''"
+         title="ความเสี่ยงสูง (HIGH + CRITICAL) — ต้องรีบจัดการ — คลิกเพื่อดูรายการเสี่ยงสูง">
       <div class="stat-icon" style="background:rgba(220,38,38,.15);color:var(--danger)"><i class="fa-solid fa-triangle-exclamation"></i></div>
-      <div><div class="stat-val" id="st-critical" style="color:var(--danger)">0</div><div class="stat-label">รายการ CRITICAL</div></div>
+      <div><div class="stat-val" id="st-risk-cnt" style="color:var(--danger)">0</div><div class="stat-label">เสี่ยงสูง</div></div>
     </div>
-    <div class="stat-card">
+    <div class="stat-card" style="cursor:pointer;transition:transform .15s,box-shadow .15s"
+         onclick="goHistory({thisMonth:true})" onmouseover="this.style.transform='translateY(-2px)';this.style.boxShadow='0 6px 16px rgba(245,158,11,.25)'"
+         onmouseout="this.style.transform='';this.style.boxShadow=''"
+         title="รายการตรวจในเดือนปัจจุบัน — คลิกเพื่อดูเฉพาะเดือนนี้">
       <div class="stat-icon" style="background:rgba(245,158,11,.15);color:var(--warn)"><i class="fa-solid fa-calendar-check"></i></div>
-      <div><div class="stat-val" id="st-month" style="color:var(--warn)">0</div><div class="stat-label">ตรวจเดือนนี้</div></div>
+      <div><div class="stat-val" id="st-month" style="color:var(--warn)">0</div><div class="stat-label">เดือนนี้</div></div>
     </div>
   </div>
 
@@ -845,13 +871,54 @@ async function api(method, path, body) {
 }
 
 // ═══════════════════ DASHBOARD ═══════════════════
+// คลิก Dashboard card → ไป History พร้อม filter
+function goHistory(opts) {
+  showView('history');
+  setTimeout(() => {
+    // เคลียร์ filter ก่อน
+    const fFrom = document.getElementById('fFrom');
+    const fTo = document.getElementById('fTo');
+    const fStatus = document.getElementById('fStatus');
+    const fRisk = document.getElementById('fRisk');
+    if (fFrom) fFrom.value = '';
+    if (fTo) fTo.value = '';
+    if (fStatus) fStatus.value = '';
+    if (fRisk) fRisk.value = '';
+
+    // ตั้ง filter ใหม่
+    if (opts.status && fStatus) fStatus.value = opts.status;
+    if (opts.risk === 'HIGH_CRITICAL') {
+      // เก็บไว้ใน window state ให้ loadHistory ใช้
+      App.riskMulti = 'HIGH,CRITICAL';
+      if (fRisk) fRisk.value = ''; // dropdown แสดง "ทั้งหมด" เพราะรวม 2 ค่า
+    } else {
+      App.riskMulti = null;
+      if (opts.risk && fRisk) fRisk.value = opts.risk;
+    }
+    if (opts.thisMonth && fFrom && fTo) {
+      const now = new Date();
+      const first = new Date(now.getFullYear(), now.getMonth(), 1);
+      const last  = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+      const fmt = d => d.toISOString().slice(0, 10);
+      fFrom.value = fmt(first);
+      fTo.value   = fmt(last);
+    }
+
+    if (typeof loadHistory === 'function') loadHistory();
+  }, 80);
+}
+
 async function loadDashboard() {
   try {
     const d = await api('GET', '/api/dashboard');
-    document.getElementById('st-total').textContent = d.total;
-    document.getElementById('st-pass').textContent = d.passRate + '%';
-    document.getElementById('st-critical').textContent = d.critical;
-    document.getElementById('st-month').textContent = d.thisMonth;
+    const s = d.byStatus || { PASS: 0, FAIL: 0, PENDING: 0 };
+    const r = d.byRisk   || { LOW: 0, MEDIUM: 0, HIGH: 0, CRITICAL: 0 };
+    document.getElementById('st-total').textContent       = d.total;
+    document.getElementById('st-pass-cnt').textContent    = s.PASS    || 0;
+    document.getElementById('st-fail-cnt').textContent    = s.FAIL    || 0;
+    document.getElementById('st-pending-cnt').textContent = s.PENDING || 0;
+    document.getElementById('st-risk-cnt').textContent    = (r.HIGH || 0) + (r.CRITICAL || 0);
+    document.getElementById('st-month').textContent       = d.thisMonth;
 
     if (d.lastSheetSync) {
       const dt = new Date(d.lastSheetSync).toLocaleString('th-TH', { timeZone: 'Asia/Bangkok' });
@@ -1517,7 +1584,14 @@ async function loadHistory() {
   if (from) params.set('from', from);
   if (to) params.set('to', to);
   if (status) params.set('status', status);
-  if (risk) params.set('risk', risk);
+  // ถ้ามาจาก Dashboard "เสี่ยงสูง" ใช้ HIGH,CRITICAL
+  // ถ้าผู้ใช้เลือก dropdown เอง = override (เคลียร์ riskMulti)
+  if (risk) {
+    params.set('risk', risk);
+    App.riskMulti = null;
+  } else if (App.riskMulti) {
+    params.set('risk', App.riskMulti);
+  }
   if (tech) params.set('techId', tech);
   try {
     const data = await fetch('/api/inspections?' + params).then(r => r.json());

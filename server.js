@@ -394,7 +394,11 @@ app.get('/api/inspections', async (req, res) => {
     if (status) filter.overallStatus = status;
     if (techId) filter.technicianId  = techId;
     if (codeId) filter.codeId        = codeId;
-    if (risk)   filter['aiReport.riskLevel'] = risk;
+    if (risk) {
+      // รองรับหลายค่า: "HIGH,CRITICAL" → $in
+      const arr = String(risk).split(',').filter(Boolean);
+      filter['aiReport.riskLevel'] = arr.length > 1 ? { $in: arr } : arr[0];
+    }
     if (from || to) {
       filter.createdAt = {};
       if (from) filter.createdAt.$gte = new Date(from);
