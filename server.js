@@ -57,7 +57,8 @@ const inspectionSchema = new mongoose.Schema({
   engineerLicense:  String,
   approvedAt:       Date,
   lineSent:         { type: Boolean, default: false },
-  photosDeletedAt:  Date
+  photosDeletedAt:  Date,
+  timeOnSite:       Number   // นาที — ตั้งแต่เปิดฟอร์มจนกด Submit
 }, { timestamps: true });
 
 const masterSchema = new mongoose.Schema({
@@ -254,6 +255,48 @@ function validateGPS(techGps, billboard) {
   };
 }
 
+// ─── Measurement Anomaly — ตรวจค่าซ้ำผิดปกติ ────────────────────────────────
+async function checkMeasurementAnomaly(codeId, measurements) {
+  try {
+    const past = await Inspection.find({ codeId })
+      .sort({ createdAt: -1 }).limit(5).lean();
+    if (!past.length) return { status: 'OK', detail: 'ไม่มีประวัติก่อนหน้าสำหรับเปรียบเทียบ' };
+
+    const keys = ['groundResistance', 'continuityGround', 'leakageCurrent', 'voltage'];
+    const matches = past.filter(p => {
+      const pm = p.measurements || {};
+      return keys.every(k => String(pm[k]) === String(measurements[k]));
+    });
+
+    if (matches.length >= 2) {
+      return {
+        status: 'CRITICAL',
+        matchCount: matches.length,
+        detail: `⚠️ ค่าซ้ำกันกับ ${matches.length} ครั้งก่อนหน้า 100% — อาจกรอกค่าเดิมโดยไม่ตรวจจริง`
+      };
+    }
+    if (matches.length === 1) {
+      return {
+        status: 'WARNING',
+        matchCount: 1,
+        detail: `⚠️ ค่าเหมือนกับการตรวจครั้งล่าสุด 100% — ควรตรวจสอบเพิ่มเติม`
+      };
+    }
+    return { status: 'OK', detail: `✅ ค่าแตกต่างจากประวัติ ${past.length} ครั้งก่อน — ปกติ` };
+  } catch {
+    return { status: 'UNKNOWN', detail: 'ไม่สามารถตรวจสอบได้' };
+  }
+}
+
+// ─── Time-on-Site Validation ──────────────────────────────────────────────────
+function checkTimeOnSite(minutes) {
+  if (minutes == null || isNaN(minutes)) return { status: 'NO_DATA', detail: 'ไม่มีข้อมูลเวลา' };
+  const min = Math.round(minutes);
+  if (min < 5)  return { status: 'CRITICAL', minutes: min, detail: `❌ ใช้เวลาเพียง ${min} นาที — เร็วผิดปกติ (ต้องการ ≥15 นาที)` };
+  if (min < 15) return { status: 'WARNING',  minutes: min, detail: `⚠️ ใช้เวลา ${min} นาที — น้อยกว่าเกณฑ์ (ควร ≥15 นาที)` };
+  return { status: 'OK', minutes: min, detail: `✅ ใช้เวลา ${min} นาที — สมเหตุสมผล` };
+}
+
 function buildPrompt(d) {
   const loc = d.locationInfo || {};
   const m   = d.measurements || {};
@@ -283,6 +326,7 @@ Leakage Current   : ${m.leakageCurrent??'-'} mA  (เกณฑ์: <10 ปกต
 
 ━━ รูปภาพ ━━
 มีรูปภาพแนบมา ${d.photoCount||0} รูป กรุณาวิเคราะห์ทุกรูปและอ่านค่าจากหน้าจอมิเตอร์ (OCR)
+ตรวจสอบความถูกต้องของรูปถ่าย: รูปถ่ายสดจากหน้างานจริงหรือไม่? มีสัญญาณของการนำรูปเก่ามาใช้หรือรูปจาก internet หรือไม่?
 
 ━━ เกณฑ์มาตรฐาน วสท. (ห้ามผ่อนปรน) ━━
 • Ground Resistance ≤ 5 Ω — หากเกิน REJECT ทันที
@@ -305,6 +349,8 @@ Leakage Current   : ${m.leakageCurrent??'-'} mA  (เกณฑ์: <10 ปกต
   "locationDetail": "...",
   "mdbStatus": "ผ่าน" or "ไม่ผ่าน" or "ไม่มีข้อมูล",
   "mdbDetail": "...",
+  "photoQuality": "ผ่าน" or "น่าสงสัย" or "ไม่มีรูป",
+  "photoQualityDetail": "อธิบายสั้นๆ ว่าดูเหมือนรูปถ่ายสดหน้างานจริงหรือไม่ และเหตุผล",
   "riskLevel": "LOW" or "MEDIUM" or "HIGH" or "CRITICAL",
   "riskReason": "...",
   "findings": ["..."],
@@ -460,16 +506,32 @@ app.get('/api/inspections', async (req, res) => {
 
 app.post('/api/inspections', async (req, res) => {
   try {
-    // GPS Validation ก่อนบันทึก
-    const billboard = await Master.findOne({ codeId: req.body.codeId }).lean();
-    const gpsResult = validateGPS(req.body.gps, billboard);
+    const codeId      = req.body.codeId;
+    const measurements = req.body.measurements || {};
 
-    // แทรก gpsValidation เข้า aiReport
-    const aiReport = { ...(req.body.aiReport || {}), gpsValidation: gpsResult };
+    // ① GPS Validation
+    const billboard  = await Master.findOne({ codeId }).lean();
+    const gpsResult  = validateGPS(req.body.gps, billboard);
+
+    // ② Measurement Anomaly
+    const anomaly = await checkMeasurementAnomaly(codeId, measurements);
+
+    // ③ Time-on-Site
+    const timeOnSite = req.body.timeOnSite != null ? parseFloat(req.body.timeOnSite) : null;
+    const timeResult = checkTimeOnSite(timeOnSite);
+
+    // รวมผลเข้า aiReport
+    const aiReport = {
+      ...(req.body.aiReport || {}),
+      gpsValidation:       gpsResult,
+      measurementAnomaly:  anomaly,
+      timeOnSite:          timeResult
+    };
 
     const rec = await Inspection.create({
       ...req.body,
       aiReport,
+      timeOnSite,
       id: `INS-${Date.now()}`,
       overallStatus:    req.body.aiReport?.overallStatus || 'PENDING',
       engineerApproval: null,

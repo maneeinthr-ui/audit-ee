@@ -504,6 +504,9 @@ body{background:var(--bg);color:var(--txt);font-family:'Segoe UI',sans-serif;dis
         <div class="rs-row"><span class="rs-key">รายละเอียดมาตรฐาน</span><span id="rStdDetail" class="rs-val">—</span></div>
         <div class="rs-row"><span class="rs-key">พิกัดสถานที่ (AI)</span><span id="rLoc" class="rs-val">—</span></div>
         <div class="rs-row"><span class="rs-key">📍 GPS Validation</span><span id="rGps" class="rs-val">—</span></div>
+        <div class="rs-row"><span class="rs-key">⏱ Time-on-Site</span><span id="rTime" class="rs-val">—</span></div>
+        <div class="rs-row"><span class="rs-key">🔢 ค่าซ้ำผิดปกติ</span><span id="rAnomaly" class="rs-val">—</span></div>
+        <div class="rs-row"><span class="rs-key">📷 Photo Quality</span><span id="rPhotoQuality" class="rs-val">—</span></div>
         <div class="rs-row"><span class="rs-key">สถานะ MDB</span><span id="rMdb" class="rs-val">—</span></div>
       </div>
       <!-- Section 2 -->
@@ -1002,6 +1005,7 @@ function riskBadge(r) {
 function initForm() {
   const f = App.form;
   f.step = 1;
+  App.formStartTime = Date.now(); // ⏱ เริ่มจับเวลา
   // Set current datetime
   const now = new Date();
   now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
@@ -1450,6 +1454,27 @@ function renderAIReport(r) {
   } else {
     set('rGps', '<span class="badge b-gray">ยังไม่ได้ตรวจสอบ</span>');
   }
+  // ⏱ Time-on-Site
+  if (r.timeOnSite) {
+    const t = r.timeOnSite;
+    const tBadge = t.status==='OK' ? 'b-green' : t.status==='WARNING' ? 'b-orange' : t.status==='CRITICAL' ? 'b-red' : 'b-gray';
+    set('rTime', `<span class="badge ${tBadge}">${t.status==='OK'?'✅ ปกติ':t.status==='WARNING'?'⚠️ น้อยไป':t.status==='CRITICAL'?'❌ เร็วผิดปกติ':'—'}</span> <small style="color:#888">${t.detail||''}</small>`);
+  } else { set('rTime', '<span class="badge b-gray">ไม่มีข้อมูล</span>'); }
+
+  // 🔢 Measurement Anomaly
+  if (r.measurementAnomaly) {
+    const a = r.measurementAnomaly;
+    const aBadge = a.status==='OK' ? 'b-green' : a.status==='WARNING' ? 'b-orange' : a.status==='CRITICAL' ? 'b-red' : 'b-gray';
+    const aLabel = a.status==='OK' ? '✅ ปกติ' : a.status==='WARNING' ? '⚠️ น่าสงสัย' : a.status==='CRITICAL' ? '❌ ซ้ำผิดปกติ' : '—';
+    set('rAnomaly', `<span class="badge ${aBadge}">${aLabel}</span> <small style="color:#888">${a.detail||''}</small>`);
+  } else { set('rAnomaly', '<span class="badge b-gray">ยังไม่ได้ตรวจสอบ</span>'); }
+
+  // 📷 Photo Quality (จาก Claude AI)
+  if (r.photoQuality) {
+    const pBadge = r.photoQuality==='ผ่าน' ? 'b-green' : r.photoQuality==='น่าสงสัย' ? 'b-red' : 'b-gray';
+    set('rPhotoQuality', `<span class="badge ${pBadge}">${r.photoQuality}</span> <small style="color:#888">${r.photoQualityDetail||''}</small>`);
+  } else { set('rPhotoQuality', '<span class="badge b-gray">ไม่มีรูป / ไม่ได้วิเคราะห์</span>'); }
+
   set('rMdb', r.mdbStatus ? `<span class="badge ${r.mdbStatus==='ผ่าน'?'b-green':r.mdbStatus==='ไม่ผ่าน'?'b-red':'b-gray'}">${r.mdbStatus}</span> ${r.mdbDetail||''}` : '—');
 
   const riskColors = { LOW: 'b-green', MEDIUM: 'b-yellow', HIGH: 'b-orange', CRITICAL: 'b-critical' };
@@ -1510,7 +1535,8 @@ async function saveWithoutAI() {
       ppeChecklist: f.ppeChecklist,
       photoFiles,
       aiReport: null,
-      overallStatus: 'PENDING'
+      overallStatus: 'PENDING',
+      timeOnSite: App.formStartTime ? ((Date.now() - App.formStartTime) / 60000) : null
     };
     const rec = await api('POST', '/api/inspections', payload);
     App.savedInspectionId = rec.id;
@@ -1534,7 +1560,8 @@ async function saveInspection() {
       ppeChecklist: f.ppeChecklist,
       photoFiles: f.savedPhotoFiles,
       aiReport: f.aiReport || null,
-      overallStatus: f.aiReport?.overallStatus || 'PENDING'
+      overallStatus: f.aiReport?.overallStatus || 'PENDING',
+      timeOnSite: App.formStartTime ? ((Date.now() - App.formStartTime) / 60000) : null
     };
     const rec = await api('POST', '/api/inspections', payload);
     App.savedInspectionId = rec.id;
