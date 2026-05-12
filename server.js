@@ -590,10 +590,11 @@ app.delete('/api/inspections/:id', async (req, res) => {
 app.post('/api/analyze', upload.array('photos', 10), async (req, res) => {
   const uploadedFiles = req.files || [];
   try {
-    // PIN check
-    const settings = await getSettings();
+    // PIN check — ยกเว้น autoMode (score < 80% ระบบรันอัตโนมัติ ไม่ต้องใส่ PIN)
+    const settings  = await getSettings();
     const adminPin  = settings.adminPin || process.env.ADMIN_PIN || '';
-    if (adminPin && (req.body.adminPin || '') !== adminPin) {
+    const isAuto    = req.body.autoMode === 'true';
+    if (adminPin && !isAuto && (req.body.adminPin || '') !== adminPin) {
       return res.status(403).json({ error: 'PIN ไม่ถูกต้อง — เฉพาะวิศวกรเท่านั้นที่วิเคราะห์ได้' });
     }
 

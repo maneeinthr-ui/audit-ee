@@ -1394,15 +1394,12 @@ async function runAnalysis(autoMode = false) {
   collectStep(2);
 
   const settings = App.settings || {};
-  let pinValue = '';
-  if (autoMode) {
-    // autoMode: ใช้ PIN จาก settings โดยตรง ไม่ต้องถาม
-    pinValue = settings.adminPin || '';
-  } else if (settings.adminPin) {
-    // Manual mode: ถาม PIN ผ่าน prompt
+  // autoMode (score < 80%) → ไม่ต้องใส่ PIN เลย ระบบส่ง flag ไปแทน
+  // manual mode → ถ้ามี PIN ให้ถามผู้ใช้
+  if (!autoMode && settings.adminPin) {
     const pin = prompt('🔒 ใส่ PIN วิศวกร เพื่อวิเคราะห์ด้วย AI:');
     if (pin === null) return;
-    pinValue = pin;
+    if (pin !== settings.adminPin) { toast('PIN ไม่ถูกต้อง', 'err'); return; }
   }
 
   const f = App.form;
@@ -1434,7 +1431,11 @@ async function runAnalysis(autoMode = false) {
       ppeChecklist: f.ppeChecklist,
       mdbChecklist: f.mdbChecklist
     }));
-    if (pinValue) fd.append('adminPin', pinValue);
+    if (autoMode) {
+      fd.append('autoMode', 'true'); // score < 80% → ไม่ต้องการ PIN
+    } else if (settings.adminPin) {
+      fd.append('adminPin', settings.adminPin);
+    }
     f.photos.forEach(photo => fd.append('photos', photo));
 
     const res = await fetch('/api/analyze', { method: 'POST', body: fd });
@@ -2087,6 +2088,8 @@ document.getElementById('modal').addEventListener('click', e => { if (e.target =
 
 // ═══════════════════ INIT ═══════════════════
 async function init() {
+  // โหลด settings ก่อนเพื่อให้ PIN และ config พร้อมใช้ตั้งแต่ต้น
+  try { App.settings = await api('GET', '/api/settings'); } catch {}
   await loadMaster();
   loadDashboard();
   populateCodeIdDropdown();
