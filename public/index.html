@@ -695,14 +695,19 @@ body{background:var(--bg);color:var(--txt);font-family:'Segoe UI',sans-serif;dis
       <label class="inp-label">URL สำหรับ CSV Export</label>
       <input class="inp" id="sSheetsUrl" placeholder="https://docs.google.com/spreadsheets/d/{ID}/export?format=csv&gid={GID}" style="margin-bottom:6px">
       <p style="font-size:.72rem;color:var(--muted);margin-bottom:12px">วิธี: Google Sheets → File → Share → Anyone with link can View → Copy URL แล้วเปลี่ยน /edit เป็น /export?format=csv</p>
-      <div style="font-size:.85rem;font-weight:600;margin-bottom:10px;color:var(--muted)">Column Mapping (index เริ่มต้นที่ 0)</div>
-      <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin-bottom:14px">
-        <div><label class="inp-label">Code ID</label><input class="inp" type="number" id="cm0" min="0" value="0"></div>
-        <div><label class="inp-label">ชื่อสถานที่</label><input class="inp" type="number" id="cm1" min="0" value="1"></div>
-        <div><label class="inp-label">ที่ตั้ง</label><input class="inp" type="number" id="cm2" min="0" value="2"></div>
-        <div><label class="inp-label">Media Type</label><input class="inp" type="number" id="cm3" min="0" value="3"></div>
-        <div><label class="inp-label">Phase</label><input class="inp" type="number" id="cm4" min="0" value="4"></div>
-        <div><label class="inp-label">ภูมิภาค</label><input class="inp" type="number" id="cm5" min="0" value="5"></div>
+      <div style="font-size:.85rem;font-weight:600;margin-bottom:6px;color:var(--muted)">Column Mapping (index เริ่มต้นที่ 0 · ใส่ -1 = ไม่มีคอลัมน์นั้น)</div>
+      <div style="font-size:.72rem;color:#f59e0b;margin-bottom:10px">📍 Sheet ปัจจุบัน: A=MediaType B=CodeID C=Location D=Road E=District F=Lat G=Lng</div>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:8px">
+        <div><label class="inp-label">Code ID</label><input class="inp" type="number" id="cm_codeId" min="-1" value="1"></div>
+        <div><label class="inp-label">ชื่อสถานที่</label><input class="inp" type="number" id="cm_name" min="-1" value="2"></div>
+        <div><label class="inp-label">Media Type</label><input class="inp" type="number" id="cm_mediaType" min="-1" value="0"></div>
+        <div><label class="inp-label">ภูมิภาค/เขต</label><input class="inp" type="number" id="cm_region" min="-1" value="4"></div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:14px">
+        <div><label class="inp-label">ถนน (Road)</label><input class="inp" type="number" id="cm_road" min="-1" value="3"></div>
+        <div><label class="inp-label">Phase (-1=ไม่มี)</label><input class="inp" type="number" id="cm_phase" min="-1" value="-1"></div>
+        <div><label class="inp-label">📍 Lat (Co_Y)</label><input class="inp" type="number" id="cm_lat" min="-1" value="5" style="border-color:#34d399"></div>
+        <div><label class="inp-label">📍 Lng (Co_X)</label><input class="inp" type="number" id="cm_lng" min="-1" value="6" style="border-color:#34d399"></div>
       </div>
       <button class="btn btn-ghost" onclick="syncSheets()" style="margin-right:8px"><i class="fa-solid fa-rotate"></i> Sync ทันที</button>
       <span id="syncStatus" style="font-size:.75rem;color:var(--muted)"></span>
@@ -1784,9 +1789,10 @@ async function loadSettings() {
     document.getElementById('sLineToken').value = s.lineChannelToken || '';
     document.getElementById('sLineTargetId').value = s.lineTargetId || '';
     const m = s.columnMapping || {};
-    ['codeId','name','location','mediaType','phase','region'].forEach((k, i) => {
-      const el = document.getElementById('cm' + i);
-      if (el) el.value = m[k] !== undefined ? m[k] : i;
+    const cmDefaults = { codeId:1, name:2, mediaType:0, region:4, road:3, phase:-1, lat:5, lng:6 };
+    Object.keys(cmDefaults).forEach(k => {
+      const el = document.getElementById('cm_' + k);
+      if (el) el.value = m[k] !== undefined ? m[k] : cmDefaults[k];
     });
     if (s.lastSheetSync) {
       const dt = new Date(s.lastSheetSync).toLocaleString('th-TH', { timeZone: 'Asia/Bangkok' });
@@ -1818,9 +1824,12 @@ function copyMobileUrl() {
 }
 
 async function saveSettings() {
-  const keys = ['codeId','name','location','mediaType','phase','region'];
+  const cmKeys = ['codeId','name','mediaType','region','road','phase','lat','lng'];
   const mapping = {};
-  keys.forEach((k, i) => { mapping[k] = parseInt(document.getElementById('cm' + i)?.value) || i; });
+  cmKeys.forEach(k => {
+    const el = document.getElementById('cm_' + k);
+    if (el) mapping[k] = parseInt(el.value);
+  });
   const body = {
     engineerName: document.getElementById('sEngName').value,
     engineerLicense: document.getElementById('sEngLicense').value,
