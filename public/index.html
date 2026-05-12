@@ -126,7 +126,7 @@ body{background:var(--bg);color:var(--txt);font-family:'Segoe UI',sans-serif;dis
     <div class="nav-item" data-nav="inspection" onclick="showView('inspection')"><i class="fa-solid fa-plus-circle"></i>ตรวจสอบใหม่</div>
     <div class="nav-item" data-nav="history" onclick="showView('history')"><i class="fa-solid fa-list-check"></i>ประวัติการตรวจ</div>
     <div class="nav-item" data-nav="masterdata" onclick="showView('masterdata')"><i class="fa-solid fa-location-dot"></i>Master Data ป้าย</div>
-    <div class="nav-item" data-nav="settings" onclick="showView('settings')"><i class="fa-solid fa-gear"></i>Settings</div>
+    <div class="nav-item" data-nav="settings" onclick="showView('settings')"><i class="fa-solid fa-lock"></i>Settings 🔒</div>
   </nav>
   <!-- QR Code -->
   <div style="padding:12px 16px;border-top:1px solid rgba(255,255,255,.1)">
@@ -647,7 +647,28 @@ body{background:var(--bg);color:var(--txt);font-family:'Segoe UI',sans-serif;dis
 
 <!-- ══════════ SETTINGS ══════════ -->
 <div id="view-settings" class="view">
-  <h1 style="font-size:1.4rem;font-weight:700;margin-bottom:20px">Settings</h1>
+
+  <!-- 🔒 Settings PIN Lock Overlay -->
+  <div id="settingsPinOverlay" style="display:none;position:fixed;inset:0;background:rgba(10,15,28,.92);z-index:9999;display:flex;align-items:center;justify-content:center">
+    <div style="background:#1e293b;border:1px solid rgba(251,191,36,.4);border-radius:16px;padding:32px 28px;width:320px;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,.6)">
+      <div style="font-size:2.2rem;margin-bottom:8px">🔒</div>
+      <div style="font-size:1.1rem;font-weight:700;color:#fbbf24;margin-bottom:4px">Settings — วิศวกรเท่านั้น</div>
+      <div style="font-size:.78rem;color:var(--muted);margin-bottom:20px">กรุณาใส่ PIN วิศวกรเพื่อเข้าถึง Settings</div>
+      <input id="settingsPinInput" type="password" inputmode="numeric" maxlength="8"
+        class="inp" placeholder="ใส่ PIN วิศวกร"
+        style="text-align:center;font-size:1.4rem;letter-spacing:.3rem;margin-bottom:8px"
+        onkeydown="if(event.key==='Enter') confirmSettingsPin()">
+      <div id="settingsPinError" style="color:#f87171;font-size:.78rem;min-height:18px;margin-bottom:10px"></div>
+      <button class="btn btn-primary" style="width:100%" onclick="confirmSettingsPin()">
+        <i class="fa-solid fa-unlock"></i> ยืนยัน PIN
+      </button>
+      <button class="btn btn-ghost" style="width:100%;margin-top:8px" onclick="showView('dashboard')">
+        ยกเลิก
+      </button>
+    </div>
+  </div>
+
+  <h1 style="font-size:1.4rem;font-weight:700;margin-bottom:20px"><i class="fa-solid fa-lock" style="color:#fbbf24;margin-right:8px"></i>Settings <span style="font-size:.75rem;font-weight:400;color:#fbbf24">(เฉพาะวิศวกร)</span></h1>
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
     <!-- API Keys -->
     <div class="card">
@@ -804,6 +825,11 @@ const App = {
 
 // ═══════════════════ NAVIGATION ═══════════════════
 function showView(name) {
+  // ออกจาก Settings → lock ทันที
+  if (App.currentView === 'settings' && name !== 'settings') {
+    App._settingsUnlocked = false;
+    clearTimeout(App._settingsLockTimer);
+  }
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
   document.getElementById('view-' + name).classList.add('active');
   document.querySelectorAll('[data-nav]').forEach(el => {
@@ -813,8 +839,42 @@ function showView(name) {
   if (name === 'dashboard') loadDashboard();
   if (name === 'history') loadHistory();
   if (name === 'masterdata') { loadMaster(); renderMaster(); }
-  if (name === 'settings') loadSettings();
+  if (name === 'settings') {
+    const pin = (App.settings || {}).adminPin || '';
+    if (pin && !App._settingsUnlocked) {
+      // มี PIN และยังไม่ได้ unlock → แสดง overlay
+      document.getElementById('settingsPinOverlay').style.display = 'flex';
+      document.getElementById('settingsPinInput').value = '';
+      document.getElementById('settingsPinError').textContent = '';
+      setTimeout(() => document.getElementById('settingsPinInput').focus(), 100);
+    } else {
+      // ไม่มี PIN หรือ unlock แล้ว → เปิด Settings ตรง
+      document.getElementById('settingsPinOverlay').style.display = 'none';
+      loadSettings();
+    }
+  }
   if (name === 'inspection') initForm();
+}
+
+function confirmSettingsPin() {
+  const input = document.getElementById('settingsPinInput').value.trim();
+  const correct = (App.settings || {}).adminPin || '';
+  if (!correct) { // ยังไม่มี PIN — เปิดได้เลย
+    document.getElementById('settingsPinOverlay').style.display = 'none';
+    loadSettings(); return;
+  }
+  if (input === correct) {
+    App._settingsUnlocked = true;
+    document.getElementById('settingsPinOverlay').style.display = 'none';
+    loadSettings();
+    // auto-lock หลัง 10 นาที
+    clearTimeout(App._settingsLockTimer);
+    App._settingsLockTimer = setTimeout(() => { App._settingsUnlocked = false; }, 10 * 60 * 1000);
+  } else {
+    document.getElementById('settingsPinError').textContent = '❌ PIN ไม่ถูกต้อง กรุณาลองใหม่';
+    document.getElementById('settingsPinInput').value = '';
+    document.getElementById('settingsPinInput').focus();
+  }
 }
 
 // ═══════════════════ TOAST ═══════════════════
