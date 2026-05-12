@@ -846,17 +846,29 @@ function showView(name) {
   if (name === 'history') loadHistory();
   if (name === 'masterdata') { loadMaster(); renderMaster(); }
   if (name === 'settings') {
-    const pin = (App.settings || {}).adminPin || '';
-    if (pin && !App._settingsUnlocked) {
-      // มี PIN และยังไม่ได้ unlock → แสดง overlay
-      document.getElementById('settingsPinOverlay').style.display = 'flex';
+    if (App._settingsUnlocked) {
+      // unlock แล้ว (session นี้) → เข้าได้เลย
+      document.getElementById('settingsPinOverlay').style.display = 'none';
+      loadSettings();
+    } else {
+      // ยังไม่ unlock → แสดง overlay ทันทีเสมอ แล้วค่อย fetch PIN จาก server
+      const overlay = document.getElementById('settingsPinOverlay');
+      overlay.style.display = 'flex';
       document.getElementById('settingsPinInput').value = '';
       document.getElementById('settingsPinError').textContent = '';
       setTimeout(() => document.getElementById('settingsPinInput').focus(), 100);
-    } else {
-      // ไม่มี PIN หรือ unlock แล้ว → เปิด Settings ตรง
-      document.getElementById('settingsPinOverlay').style.display = 'none';
-      loadSettings();
+      // ถ้ายังไม่มี settings → โหลดก่อน (เพื่อรู้ว่ามี PIN ไหม)
+      if (!App.settings || !App.settings.key) {
+        fetch('/api/settings').then(r => r.json()).then(s => {
+          App.settings = s;
+          if (!s.adminPin) {
+            // ไม่มี PIN → เข้าได้เลย
+            App._settingsUnlocked = true;
+            overlay.style.display = 'none';
+            loadSettings();
+          }
+        });
+      }
     }
   }
   if (name === 'inspection') initForm();
@@ -874,10 +886,15 @@ function togglePinVis() {
   }
 }
 
-function confirmSettingsPin() {
+async function confirmSettingsPin() {
   const input = document.getElementById('settingsPinInput').value.trim();
+  // โหลด settings ถ้ายังไม่มี (กรณี click เร็วมาก)
+  if (!App.settings || !App.settings.key) {
+    try { App.settings = await fetch('/api/settings').then(r => r.json()); } catch {}
+  }
   const correct = (App.settings || {}).adminPin || '';
   if (!correct) { // ยังไม่มี PIN — เปิดได้เลย
+    App._settingsUnlocked = true;
     document.getElementById('settingsPinOverlay').style.display = 'none';
     loadSettings(); return;
   }
