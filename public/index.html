@@ -955,16 +955,17 @@ function toast(msg, type = 'info') {
 async function initQR() {
   try {
     const info = await fetch('/api/network-info').then(r => r.json());
-    const ip   = info.ip;
-    const port = info.port || 3000;
-    if (!ip || ip === 'localhost') { document.getElementById('qrNoNet').style.display='block'; return; }
-    const url = `http://${ip}:${port}`;
-    document.getElementById('qrIpText').textContent = `${ip}:${port}`;
+    const url  = info.publicUrl;
+    if (!url) { document.getElementById('qrNoNet').style.display='block'; return; }
+
+    // แสดง label ตาม mode
+    const label = info.mode === 'railway' ? '☁️ Railway (ทุกที่)' : `📶 WiFi`;
+    const shortUrl = url.replace('https://','').replace('http://','');
+    document.getElementById('qrIpText').textContent = shortUrl.length > 22 ? shortUrl.slice(0,22)+'…' : shortUrl;
+
+    App._mobileUrl = url; // เก็บไว้ให้ Settings ใช้ด้วย
     const canvas = document.getElementById('qrCanvas');
-    QRCode.toCanvas(canvas, url, {
-      width: 188, margin: 1,
-      color: { dark: '#0f172a', light: '#ffffff' }
-    });
+    QRCode.toCanvas(canvas, url, { width: 180, margin: 1, color: { dark: '#0f172a', light: '#ffffff' } });
   } catch(e) { document.getElementById('qrNoNet').style.display='block'; }
 }
 
@@ -1950,9 +1951,9 @@ async function loadSettings() {
     }
     // Load mobile URL
     try {
-      const net = await api('GET', '/api/network-info');
-      const mUrl = `http://${net.ip}:${net.port}`;
-      const el = document.getElementById('mobileUrl');
+      const net  = await api('GET', '/api/network-info');
+      const mUrl = net.publicUrl || `http://${net.ip}:${net.port}`;
+      const el   = document.getElementById('mobileUrl');
       if (el) el.textContent = mUrl;
       App._mobileUrl = mUrl;
       // Generate QR code (ใหญ่ขึ้น 160px)

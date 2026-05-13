@@ -907,7 +907,18 @@ function getLocalIP() {
   }
   return 'localhost';
 }
-app.get('/api/network-info', (req, res) => res.json({ ip: getLocalIP(), port: PORT }));
+app.get('/api/network-info', (req, res) => {
+  // Railway public URL (ใช้ได้จากทุกที่)
+  const railwayDomain = process.env.RAILWAY_PUBLIC_DOMAIN || process.env.RAILWAY_STATIC_URL || '';
+  if (railwayDomain) {
+    const publicUrl = railwayDomain.startsWith('http') ? railwayDomain : `https://${railwayDomain}`;
+    return res.json({ ip: null, port: PORT, publicUrl, mode: 'railway' });
+  }
+  // localhost → ใช้ local WiFi IP
+  const ip = getLocalIP();
+  const publicUrl = (ip && ip !== 'localhost') ? `http://${ip}:${PORT}` : null;
+  res.json({ ip, port: PORT, publicUrl, mode: 'local' });
+});
 
 // ─── Start ────────────────────────────────────────────────────────────────────
 app.listen(PORT, '0.0.0.0', () => {
