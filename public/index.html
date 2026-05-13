@@ -1059,6 +1059,7 @@ async function loadDashboard() {
 function renderCharts(d) {
   Chart.defaults.color = '#94a3b8';
   const destroyChart = id => { if (App.charts[id]) { App.charts[id].destroy(); } };
+  const a = d.byApproval || { APPROVED: 0, REJECTED: 0, AWAITING: 0 };
 
   destroyChart('status');
   App.charts.status = new Chart(document.getElementById('chartStatus'), {
