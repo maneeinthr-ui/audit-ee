@@ -746,14 +746,41 @@ body{background:var(--bg);color:var(--txt);font-family:'Segoe UI',sans-serif;dis
   <!-- Mobile Access -->
   <div class="card" style="grid-column:1/-1">
     <div style="font-size:.9rem;font-weight:600;margin-bottom:14px;color:#34d399"><i class="fa-solid fa-mobile-screen"></i> เข้าใช้งานบนมือถือช่าง</div>
-    <p style="font-size:.82rem;color:var(--muted);margin-bottom:12px">ช่างสามารถเปิด Audit-EE บนมือถือได้ผ่าน WiFi เดียวกัน — GPS บนมือถือจะแม่นยำกว่า PC มาก</p>
-    <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
-      <div style="background:rgba(52,211,153,.1);border:1px solid rgba(52,211,153,.3);border-radius:8px;padding:12px 20px">
-        <div style="font-size:.72rem;color:var(--muted);margin-bottom:4px">URL สำหรับมือถือ (WiFi เดียวกัน)</div>
-        <div id="mobileUrl" style="font-size:1rem;font-weight:700;color:#34d399;font-family:monospace">กำลังโหลด...</div>
+    <p style="font-size:.82rem;color:var(--muted);margin-bottom:16px">สแกน QR Code ด้านล่าง หรือพิมพ์ URL ในมือถือ — ต้องอยู่ WiFi เดียวกัน</p>
+    <div style="display:flex;gap:20px;align-items:flex-start;flex-wrap:wrap">
+
+      <!-- QR Code กล่องใหญ่ -->
+      <div style="background:white;border-radius:12px;padding:14px;display:inline-flex;flex-direction:column;align-items:center;gap:8px;box-shadow:0 4px 20px rgba(0,0,0,.3)">
+        <div id="mobileQr" style="line-height:0"></div>
+        <div style="font-size:.65rem;color:#334155;font-weight:600">📱 สแกนเพื่อเปิด Audit-EE</div>
       </div>
-      <button class="btn btn-ghost" style="font-size:.78rem" onclick="copyMobileUrl()"><i class="fa-solid fa-copy"></i> Copy URL</button>
-      <div id="mobileQr" style="background:white;padding:8px;border-radius:8px"></div>
+
+      <!-- URL + ปุ่ม -->
+      <div style="flex:1;min-width:220px">
+        <div style="background:rgba(52,211,153,.1);border:1px solid rgba(52,211,153,.3);border-radius:8px;padding:12px 16px;margin-bottom:10px">
+          <div style="font-size:.7rem;color:var(--muted);margin-bottom:4px">🌐 URL WiFi (เดียวกัน)</div>
+          <div id="mobileUrl" style="font-size:.9rem;font-weight:700;color:#34d399;font-family:monospace;word-break:break-all">กำลังโหลด...</div>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn btn-ghost" style="font-size:.78rem" onclick="copyMobileUrl()"><i class="fa-solid fa-copy"></i> Copy URL</button>
+          <button class="btn btn-ghost" style="font-size:.78rem" onclick="showQRModal()"><i class="fa-solid fa-expand"></i> QR ใหญ่</button>
+        </div>
+        <p style="font-size:.72rem;color:var(--muted);margin-top:10px">💡 GPS มือถือแม่นยำกว่า PC มาก — แนะนำให้ช่างใช้มือถือตรวจสอบ</p>
+      </div>
+    </div>
+
+    <!-- QR Modal -->
+    <div id="qrModal" onclick="this.style.display='none'" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:9998;display:none;align-items:center;justify-content:center;cursor:pointer">
+      <div onclick="event.stopPropagation()" style="background:white;border-radius:20px;padding:28px;text-align:center;max-width:340px;width:90%">
+        <div style="font-size:1rem;font-weight:700;color:#0f172a;margin-bottom:4px">📱 Audit-EE</div>
+        <div style="font-size:.75rem;color:#64748b;margin-bottom:16px">สแกน QR Code เพื่อเปิดในมือถือ</div>
+        <canvas id="qrModalCanvas" style="border-radius:8px"></canvas>
+        <div id="qrModalUrl" style="font-size:.7rem;color:#475569;margin-top:10px;font-family:monospace;word-break:break-all"></div>
+        <button onclick="document.getElementById('qrModal').style.display='none'"
+          style="margin-top:14px;background:#f1f5f9;border:none;border-radius:8px;padding:8px 24px;cursor:pointer;font-size:.82rem;color:#334155">
+          ✕ ปิด
+        </button>
+      </div>
     </div>
   </div>
 
@@ -1928,16 +1955,26 @@ async function loadSettings() {
       const el = document.getElementById('mobileUrl');
       if (el) el.textContent = mUrl;
       App._mobileUrl = mUrl;
-      // Generate QR code
+      // Generate QR code (ใหญ่ขึ้น 160px)
       const qrDiv = document.getElementById('mobileQr');
       if (qrDiv && window.QRCode) {
         qrDiv.innerHTML = '';
-        QRCode.toCanvas(document.createElement('canvas'), mUrl, { width: 80, color: { dark: '#000', light: '#fff' } }, (err, canvas) => {
+        QRCode.toCanvas(document.createElement('canvas'), mUrl, { width: 160, margin: 1, color: { dark: '#0f172a', light: '#ffffff' } }, (err, canvas) => {
           if (!err) { qrDiv.appendChild(canvas); }
         });
       }
     } catch (_) {}
   } catch (e) { toast(e.message, 'err'); }
+}
+
+function showQRModal() {
+  const url = App._mobileUrl;
+  if (!url) { toast('ยังไม่ได้โหลด URL', 'err'); return; }
+  const modal = document.getElementById('qrModal');
+  document.getElementById('qrModalUrl').textContent = url;
+  const canvas = document.getElementById('qrModalCanvas');
+  QRCode.toCanvas(canvas, url, { width: 260, margin: 2, color: { dark: '#0f172a', light: '#ffffff' } });
+  modal.style.display = 'flex';
 }
 
 function copyMobileUrl() {
