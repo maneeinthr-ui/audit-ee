@@ -303,7 +303,7 @@ function buildPrompt(d) {
   const ppe = d.ppeChecklist || {};
   const mdb = d.mdbChecklist || {};
   const phaseLabel = m.phase === '3P' ? '3 เฟส 380V' : '1 เฟส 220V';
-  const voltStd    = m.phase === '3P' ? '380V' : '220V';
+  const voltStd    = m.phase === '3P' ? '342–418V' : '215–240V';
   return `คุณคือ "Audit-EE" ผู้เชี่ยวชาญด้านวิศวกรรมไฟฟ้าและความปลอดภัย บริษัท Plan B Media
 ตรวจสอบการซ่อมบำรุงระบบไฟฟ้าป้ายโฆษณาจากช่าง "${d.technicianName}" รหัส ${d.technicianId}
 
@@ -332,7 +332,7 @@ Leakage Current   : ${m.leakageCurrent??'-'} mA  (เกณฑ์: <10 ปกต
 • Ground Resistance ≤ 5 Ω — หากเกิน REJECT ทันที
 • Continuity Ground < 0.5 Ω
 • Leakage Current < 10 mA ปกติ | > 30 mA = CRITICAL
-• Voltage ${voltStd} (±10%)
+• Voltage ${voltStd}
 • PPE ต้องครบทุกชิ้นก่อนเริ่มงาน — ขาดชิ้นใดชิ้นหนึ่ง = FAIL Safety
 
 วิเคราะห์รูปภาพทั้งหมด เปรียบเทียบค่า OCR กับค่าที่ช่างบันทึก และตรวจสอบ PPE จากรูปถ่าย

@@ -349,7 +349,7 @@ body{background:var(--bg);color:var(--txt);font-family:'Segoe UI',sans-serif;dis
           <span style="color:var(--muted);font-size:.82rem">V</span>
         </div>
         <span id="indVolt" class="badge b-gray">—</span>
-        <span class="meas-std" id="voltStdLabel">220V ±10%</span>
+        <span class="meas-std" id="voltStdLabel">215–240V</span>
       </div>
     </div>
     <!-- MDB Checklist -->
@@ -1277,7 +1277,7 @@ function updateLeak(val) {
 }
 function updateVoltStd() {
   const is3P = document.getElementById('p3P').checked;
-  document.getElementById('voltStdLabel').textContent = is3P ? '380V ±10%' : '220V ±10%';
+  document.getElementById('voltStdLabel').textContent = is3P ? '342–418V' : '215–240V';
   updateVoltInd(document.getElementById('mVolt').value);
 }
 function updateVoltInd(val) {
@@ -1370,7 +1370,9 @@ function calcScore() {
   items.push({ name: 'Ground ≤5Ω',       pass: !isNaN(ground) && ground <= 5 });
   items.push({ name: 'Continuity <0.5Ω', pass: !isNaN(cont) && cont < 0.5 });
   items.push({ name: 'Leakage <10mA',    pass: !isNaN(leak) && leak < 10 });
-  items.push({ name: `Voltage ${voltStd}V±10%`, pass: !isNaN(volt) && Math.abs(volt - voltStd) <= voltStd * 0.1 });
+  const voltMin = is3P ? 342 : 215;
+  const voltMax = is3P ? 418 : 240;
+  items.push({ name: is3P ? 'Voltage 342–418V' : 'Voltage 215–240V', pass: !isNaN(volt) && volt >= voltMin && volt <= voltMax });
 
   // MDB — 4 items
   [['breaker','เบรกเกอร์'],['timer','ทามเมอร์'],['magnetic','แมกเนติก'],['wiring','Wiring']].forEach(([k,n]) => {
