@@ -312,7 +312,7 @@ function buildPrompt(d) {
 ที่ตั้ง: ${loc.location||'ไม่ระบุ'}  |  ประเภทสื่อ: ${loc.mediaType||'ไม่ระบุ'}  |  ระบบ: ${phaseLabel}
 
 ━━ ค่าที่ช่างบันทึก ━━
-Ground Resistance : ${m.groundResistance??'-'} Ω   (เกณฑ์ วสท.: ≤ 5 Ω)
+แรงดัน Ground-Neutral: ${m.groundResistance??'-'} V  (เกณฑ์: ≥ ค่า Line-Neutral ×99% — วัดมิลลิมิเตอร์สายกราวด์กับนิวตรัล)
 Continuity Ground : ${m.continuityGround??'-'} Ω   (เกณฑ์ วสท.: < 0.5 Ω)
 Leakage Current   : ${m.leakageCurrent??'-'} mA  (เกณฑ์: <10 ปกติ | 10-30 เฝ้าระวัง | >30 อันตราย)
 แรงดันไฟฟ้า       : ${m.voltage??'-'} V   (เกณฑ์: ${voltStd})
@@ -329,7 +329,7 @@ Leakage Current   : ${m.leakageCurrent??'-'} mA  (เกณฑ์: <10 ปกต
 ตรวจสอบความถูกต้องของรูปถ่าย: รูปถ่ายสดจากหน้างานจริงหรือไม่? มีสัญญาณของการนำรูปเก่ามาใช้หรือรูปจาก internet หรือไม่?
 
 ━━ เกณฑ์มาตรฐาน วสท. (ห้ามผ่อนปรน) ━━
-• Ground Resistance ≤ 5 Ω — หากเกิน REJECT ทันที
+• Ground-Neutral Voltage ≥ Line-Neutral×99% — วัดสายกราวด์กับนิวตรัล ควรได้ค่าใกล้เคียงหรือเท่ากับ Line-Neutral (เช่น L-N=220V, G-N≥217.8V ผ่าน)
 • Continuity Ground < 0.5 Ω
 • Leakage Current < 10 mA ปกติ | > 30 mA = CRITICAL
 • Voltage ${voltStd}

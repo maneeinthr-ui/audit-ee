@@ -315,14 +315,14 @@ body{background:var(--bg);color:var(--txt);font-family:'Segoe UI',sans-serif;dis
       <div class="meas-row" style="font-size:.75rem;color:var(--muted);margin-bottom:6px">
         <div>ค่าที่วัดได้</div><div>สถานะ</div><div>เกณฑ์มาตรฐาน วสท.</div>
       </div>
-      <div style="margin-bottom:6px;font-size:.8rem;color:var(--muted)">1. Ground Resistance (Earth Tester 3 Pole)</div>
+      <div style="margin-bottom:6px;font-size:.8rem;color:var(--muted)">1. แรงดัน Ground-Neutral <span style="color:#64748b">(มิลลิมิเตอร์ — วัดสายกราวด์กับนิวตรัล)</span></div>
       <div class="meas-row">
         <div style="display:flex;align-items:center;gap:6px">
-          <input class="inp" type="number" id="mGround" step="0.01" min="0" placeholder="0.00" oninput="updateInd('indGround',this.value,'lte',5,'Ω')">
-          <span style="color:var(--muted);font-size:.82rem">Ω</span>
+          <input class="inp" type="number" id="mGround" step="0.01" min="0" placeholder="0.00" oninput="updateGroundInd(this.value)">
+          <span style="color:var(--muted);font-size:.82rem">V</span>
         </div>
         <span id="indGround" class="badge b-gray">—</span>
-        <span class="meas-std">≤ 5 Ω</span>
+        <span class="meas-std" id="groundStdLabel">≥ ค่า L-N (≈220V)</span>
       </div>
       <div style="margin-bottom:6px;font-size:.8rem;color:var(--muted)">2. Continuity Ground (มัลติมิเตอร์)</div>
       <div class="meas-row">
@@ -588,7 +588,7 @@ body{background:var(--bg);color:var(--txt);font-family:'Segoe UI',sans-serif;dis
       <table class="data-table">
         <thead><tr>
           <th>รหัสงาน</th><th>วันที่</th><th>Code ID</th><th>สถานที่</th>
-          <th>ช่าง</th><th>Ground Ω</th><th>Leak mA</th><th>PPE</th>
+          <th>ช่าง</th><th>Gnd-N V</th><th>Leak mA</th><th>PPE</th>
           <th>สถานะ</th><th>ความเสี่ยง</th><th>วิศวกร</th><th></th>
         </tr></thead>
         <tbody id="histBody"></tbody>
@@ -1278,7 +1278,21 @@ function updateLeak(val) {
 function updateVoltStd() {
   const is3P = document.getElementById('p3P').checked;
   document.getElementById('voltStdLabel').textContent = is3P ? '342–418V' : '215–240V';
+  // อัพเดท ground label ตาม phase (Ground-Neutral ≈ 220V เสมอทั้ง 1P และ 3P)
+  document.getElementById('groundStdLabel').textContent = '≥ ค่า L-N (≈220V)';
   updateVoltInd(document.getElementById('mVolt').value);
+  updateGroundInd(document.getElementById('mGround').value);
+}
+function updateGroundInd(val) {
+  const el   = document.getElementById('indGround');
+  const gnd  = parseFloat(val);
+  if (isNaN(gnd) || val === '') { el.textContent = '—'; el.className = 'badge b-gray'; return; }
+  // อ้างอิง Line-Neutral จากช่อง voltage (ถ้ายังไม่กรอกใช้ 220 เป็น default)
+  const lnRef = parseFloat(document.getElementById('mVolt')?.value) || 220;
+  const pct   = (gnd / lnRef) * 100;
+  if (gnd >= lnRef * 0.99) { el.textContent = `${gnd} V ✓`; el.className = 'badge b-green'; }
+  else if (gnd >= lnRef * 0.95) { el.textContent = `${gnd} V ⚠`; el.className = 'badge b-yellow'; }
+  else { el.textContent = `${gnd} V ✗`; el.className = 'badge b-red'; }
 }
 function updateVoltInd(val) {
   const el = document.getElementById('indVolt');
@@ -1339,7 +1353,7 @@ function buildPreSummary() {
   document.getElementById('preSummary').innerHTML = `
     <span class="badge b-blue">${f.codeId || '—'}</span>
     <span style="margin:0 8px">|</span> ช่าง: <strong>${f.technicianName}</strong> (${f.technicianId})
-    <span style="margin:0 8px">|</span> Ground: <strong>${m.groundResistance??'—'} Ω</strong>
+    <span style="margin:0 8px">|</span> Ground-N: <strong>${m.groundResistance??'—'} V</strong>
     <span style="margin:0 8px">|</span> Leakage: <strong>${m.leakageCurrent??'—'} mA</strong>
     <span style="margin:0 8px">|</span> PPE: <strong>${ppeCount}/5</strong>
     <span style="margin:0 8px">|</span> รูป: <strong>${f.photos.length} รูป</strong>`;
@@ -1367,7 +1381,9 @@ function calcScore() {
   const volt   = parseFloat(m.voltage);
   const is3P   = m.phase === '3P';
   const voltStd = is3P ? 380 : 220;
-  items.push({ name: 'Ground ≤5Ω',       pass: !isNaN(ground) && ground <= 5 });
+  // Ground-Neutral ≥ 99% ของ Line-Neutral (voltage)
+  const lnRef = !isNaN(volt) && volt > 0 ? volt : 220;
+  items.push({ name: 'Ground-Neutral ≥ L-N', pass: !isNaN(ground) && ground >= lnRef * 0.99 });
   items.push({ name: 'Continuity <0.5Ω', pass: !isNaN(cont) && cont < 0.5 });
   items.push({ name: 'Leakage <10mA',    pass: !isNaN(leak) && leak < 10 });
   const voltMin = is3P ? 342 : 215;
@@ -2071,7 +2087,7 @@ async function openDetail(id) {
         <div><span style="color:var(--muted)">สถานที่:</span> ${r.locationInfo?.name||''}</div>
         <div><span style="color:var(--muted)">ช่าง:</span> ${r.technicianName} (${r.technicianId})</div>
         <div><span style="color:var(--muted)">วันที่:</span> ${r.createdAt?.slice(0,16)?.replace('T',' ')}</div>
-        <div><span style="color:var(--muted)">Ground:</span> ${r.measurements?.groundResistance??'—'} Ω</div>
+        <div><span style="color:var(--muted)">Ground-N:</span> ${r.measurements?.groundResistance??'—'} V</div>
         <div><span style="color:var(--muted)">Continuity:</span> ${r.measurements?.continuityGround??'—'} Ω</div>
         <div><span style="color:var(--muted)">Leakage:</span> ${r.measurements?.leakageCurrent??'—'} mA</div>
         <div><span style="color:var(--muted)">Voltage:</span> ${r.measurements?.voltage??'—'} V (${r.measurements?.phase||''})</div>
