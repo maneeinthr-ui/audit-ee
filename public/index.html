@@ -2096,11 +2096,53 @@ async function openDetail(id) {
   } catch (e) { toast(e.message, 'err'); }
 }
 
-async function approveInspection(id, decision) {
+function approveInspection(id, decision) {
+  const adminPin = (App.settings || {}).adminPin || '';
+  const color    = decision === 'APPROVED' ? '#10b981' : '#ef4444';
+  const icon     = decision === 'APPROVED' ? '✅' : '❌';
+
+  // สร้าง PIN overlay
+  const old = document.getElementById('approvePin');
+  if (old) old.remove();
+  const overlay = document.createElement('div');
+  overlay.id = 'approvePin';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(10,15,28,.92);z-index:9999;display:flex;align-items:center;justify-content:center';
+  overlay.innerHTML = `
+    <div style="background:#1e293b;border:2px solid ${color}66;border-radius:16px;padding:28px 24px;width:300px;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,.6)">
+      <div style="font-size:2rem;margin-bottom:6px">${icon}</div>
+      <div style="font-size:1rem;font-weight:700;color:${color};margin-bottom:4px">${decision}</div>
+      <div style="font-size:.78rem;color:#94a3b8;margin-bottom:18px">ใส่ PIN วิศวกรเพื่อยืนยัน</div>
+      <input id="approvePinInput" type="password" inputmode="numeric" maxlength="8"
+        class="inp" placeholder="PIN วิศวกร"
+        style="text-align:center;font-size:1.3rem;letter-spacing:.3rem;margin-bottom:6px">
+      <div id="approvePinError" style="color:#f87171;font-size:.75rem;min-height:16px;margin-bottom:12px"></div>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-ghost" style="flex:1" onclick="document.getElementById('approvePin').remove()">ยกเลิก</button>
+        <button class="btn" style="flex:1;background:${color};color:#fff;border:none;border-radius:8px;padding:10px"
+          onclick="doApprove('${id}','${decision}','${adminPin}')">ยืนยัน</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  setTimeout(() => document.getElementById('approvePinInput')?.focus(), 100);
+  document.getElementById('approvePinInput').addEventListener('keydown', e => {
+    if (e.key === 'Enter') doApprove(id, decision, adminPin);
+  });
+}
+
+async function doApprove(id, decision, adminPin) {
+  const input = (document.getElementById('approvePinInput')?.value || '').trim();
+  if (adminPin && input !== adminPin) {
+    document.getElementById('approvePinError').textContent = '❌ PIN ไม่ถูกต้อง';
+    document.getElementById('approvePinInput').value = '';
+    document.getElementById('approvePinInput').focus();
+    return;
+  }
   try {
+    document.getElementById('approvePin')?.remove();
     await api('PUT', '/api/inspections/' + id + '/approve', { decision, notes: '' });
     closeModal();
-    toast(`${decision === 'APPROVED' ? 'อนุมัติ' : 'ปฏิเสธ'} รายงานสำเร็จ`, 'ok');
+    toast(`${decision === 'APPROVED' ? '✅ อนุมัติ' : '❌ ปฏิเสธ'} รายงานสำเร็จ`, 'ok');
+    loadDashboard();
     if (App.currentView === 'history') loadHistory();
   } catch (e) { toast(e.message, 'err'); }
 }
