@@ -438,6 +438,9 @@ function buildLineMessage(inspection, report) {
 
 // ─── ROUTES ───────────────────────────────────────────────────────────────────
 
+// ช่องรับคำสั่งของผู้ช่วยกลาง (Orchestrator) — อ่านอย่างเดียว ต้องมี AGENT_KEY
+require('./agent')(app, { Inspection, Master });
+
 // ── Settings ──────────────────────────────────────────────────────────────────
 // Public read: secrets are stripped (see publicSettings) — the browser only learns hasPin/hasLineToken/...
 app.get('/api/settings', async (req, res) => {
