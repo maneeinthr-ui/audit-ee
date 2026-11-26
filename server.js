@@ -209,6 +209,7 @@ async function uploadToCloudinary(localPath, dateStr) {
 const uploadCSV = multer({ dest: os.tmpdir(), limits: { fileSize: 5 * 1024 * 1024 } });
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
+app.set('trust proxy', 1); // Railway proxy → req.ip = real client IP (PIN brute-force guard counts per client)
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 // ป้องกัน browser cache HTML/JS
@@ -221,6 +222,68 @@ app.use((req, res, next) => {
 });
 app.use(express.static(PUBLIC_DIR));
 app.use('/uploads', express.static(UPLOADS_DIR)); // serve รูป local
+
+// ─── Security: secrets never leave the server · PIN checked server-side ───────
+const crypto = require('crypto');
+const SECRET_FIELDS = ['adminPin', 'lineChannelToken', 'anthropicKey'];
+
+/** Settings safe to send to the browser: secrets removed, only "is it set?" flags. */
+function publicSettings(s) {
+  const o = s && s.toObject ? s.toObject() : { ...(s || {}) };
+  const out = {
+    ...o,
+    hasPin: !!(o.adminPin || process.env.ADMIN_PIN),
+    hasLineToken: !!(o.lineChannelToken || process.env.LINE_CHANNEL_TOKEN),
+    hasAnthropicKey: !!(o.anthropicKey || process.env.ANTHROPIC_API_KEY)
+  };
+  SECRET_FIELDS.forEach(k => delete out[k]);
+  return out;
+}
+
+function sameText(a, b) {
+  const x = crypto.createHash('sha256').update(String(a)).digest();
+  const y = crypto.createHash('sha256').update(String(b)).digest();
+  return crypto.timingSafeEqual(x, y);
+}
+
+// Brute-force guard: max 10 wrong PINs per IP per 15 minutes
+const PIN_WINDOW_MS = 15 * 60_000;
+const pinFails = new Map();
+function pinLocked(ip) {
+  const f = pinFails.get(ip);
+  return !!f && f.count >= 10 && Date.now() - f.first < PIN_WINDOW_MS;
+}
+function notePinFail(ip) {
+  const f = pinFails.get(ip);
+  if (!f || Date.now() - f.first >= PIN_WINDOW_MS) pinFails.set(ip, { count: 1, first: Date.now() });
+  else f.count++;
+}
+
+/** 'ok' | 'wrong' | 'locked'. No PIN configured yet → 'ok' (first-run setup). */
+async function checkPin(req) {
+  const settings = await getSettings();
+  const adminPin = settings.adminPin || process.env.ADMIN_PIN || '';
+  if (!adminPin) return 'ok';
+  if (pinLocked(req.ip)) return 'locked';
+  const pin = req.get('x-admin-pin') || req.body?.pin || req.body?.adminPin || '';
+  if (pin && sameText(pin, adminPin)) { pinFails.delete(req.ip); return 'ok'; }
+  notePinFail(req.ip);
+  return 'wrong';
+}
+
+function pinError(res, r) {
+  if (r === 'locked') return res.status(429).json({ error: 'ใส่ PIN ผิดหลายครั้ง กรุณารอ 15 นาที', wrongPin: true });
+  return res.status(403).json({ error: 'PIN ไม่ถูกต้อง — เฉพาะวิศวกรเท่านั้น', wrongPin: true });
+}
+
+/** Express middleware: engineer PIN required (header x-admin-pin, or body.pin / body.adminPin). */
+async function requirePin(req, res, next) {
+  try {
+    const r = await checkPin(req);
+    if (r === 'ok') return next();
+    return pinError(res, r);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+}
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 async function getAnthropic() {
@@ -376,19 +439,35 @@ function buildLineMessage(inspection, report) {
 // ─── ROUTES ───────────────────────────────────────────────────────────────────
 
 // ── Settings ──────────────────────────────────────────────────────────────────
+// Public read: secrets are stripped (see publicSettings) — the browser only learns hasPin/hasLineToken/...
 app.get('/api/settings', async (req, res) => {
-  try { res.json(await getSettings()); } catch (e) { res.status(500).json({ error: e.message }); }
+  try { res.json(publicSettings(await getSettings())); } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.put('/api/settings', async (req, res) => {
+// Check a PIN without doing anything else (used by the page to unlock Settings / approve dialogs)
+app.post('/api/pin/verify', async (req, res) => {
   try {
-    const body = req.body;
+    const r = await checkPin(req);
+    if (r === 'ok') return res.json({ ok: true });
+    return pinError(res, r);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+const SETTINGS_FIELDS = ['engineerName', 'engineerLicense', 'companyName', 'sheetsUrl', 'lineChannelToken',
+  'lineTargetId', 'columnMapping', 'adminPin', 'anthropicKey'];
+
+app.put('/api/settings', requirePin, async (req, res) => {
+  try {
+    const body = {};
+    for (const k of SETTINGS_FIELDS) if (req.body[k] !== undefined) body[k] = req.body[k];
+    // Blank secret field = "keep the current value" (the page never receives the real secret)
+    SECRET_FIELDS.forEach(k => { if (body[k] === '' || body[k] === null) delete body[k]; });
     if (body.anthropicKey)      process.env.ANTHROPIC_API_KEY  = body.anthropicKey;
     if (body.lineChannelToken)  process.env.LINE_CHANNEL_TOKEN = body.lineChannelToken;
     if (body.lineTargetId)      process.env.LINE_TARGET_ID     = body.lineTargetId;
     if (body.sheetsUrl)         process.env.GOOGLE_SHEETS_URL  = body.sheetsUrl;
     const s = await Settings.findOneAndUpdate({ key: 'main' }, { $set: body }, { upsert: true, new: true });
-    res.json({ success: true, settings: s });
+    res.json({ success: true, settings: publicSettings(s) });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -397,12 +476,12 @@ app.get('/api/master', async (req, res) => {
   try { res.json(await Master.find({}).lean()); } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.post('/api/master', async (req, res) => {
+app.post('/api/master', requirePin, async (req, res) => {
   try { const item = await Master.create({ ...req.body, id: uuidv4() }); res.status(201).json(item); }
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.put('/api/master/:id', async (req, res) => {
+app.put('/api/master/:id', requirePin, async (req, res) => {
   try {
     const item = await Master.findOneAndUpdate({ id: req.params.id }, { $set: req.body }, { new: true });
     if (!item) return res.status(404).json({ error: 'ไม่พบข้อมูล' });
@@ -410,13 +489,13 @@ app.put('/api/master/:id', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.delete('/api/master/:id', async (req, res) => {
+app.delete('/api/master/:id', requirePin, async (req, res) => {
   try { await Master.deleteOne({ id: req.params.id }); res.json({ success: true }); }
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // Sync from Google Sheets
-app.post('/api/master/sync', async (req, res) => {
+app.post('/api/master/sync', requirePin, async (req, res) => {
   try {
     const settings = await getSettings();
     const url = req.body.url || settings.sheetsUrl || process.env.GOOGLE_SHEETS_URL;
@@ -448,7 +527,7 @@ app.post('/api/master/sync', async (req, res) => {
 });
 
 // Import CSV
-app.post('/api/master/import', uploadCSV.single('csv'), async (req, res) => {
+app.post('/api/master/import', requirePin, uploadCSV.single('csv'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'ไม่มีไฟล์' });
     const csvText = fs.readFileSync(req.file.path, 'utf8');
@@ -550,27 +629,33 @@ app.get('/api/inspections/:id', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.put('/api/inspections/:id/approve', async (req, res) => {
+/** Engineer decision on an inspection (shared by the web page and the orchestrator agent). */
+async function decideInspection(id, decision, notes) {
+  if (!['APPROVED', 'REJECTED'].includes(decision)) throw Object.assign(new Error('decision ต้องเป็น APPROVED หรือ REJECTED'), { status: 400 });
+  const settings = await getSettings();
+  return Inspection.findOneAndUpdate(
+    { id },
+    { $set: {
+        engineerApproval: decision,
+        engineerNotes:    notes || '',
+        engineerName:     settings.engineerName,
+        engineerLicense:  settings.engineerLicense,
+        approvedAt:       new Date()
+      }
+    },
+    { new: true }
+  );
+}
+
+app.put('/api/inspections/:id/approve', requirePin, async (req, res) => {
   try {
-    const settings = await getSettings();
-    const rec = await Inspection.findOneAndUpdate(
-      { id: req.params.id },
-      { $set: {
-          engineerApproval: req.body.decision,
-          engineerNotes:    req.body.notes || '',
-          engineerName:     settings.engineerName,
-          engineerLicense:  settings.engineerLicense,
-          approvedAt:       new Date()
-        }
-      },
-      { new: true }
-    );
+    const rec = await decideInspection(req.params.id, req.body.decision, req.body.notes);
     if (!rec) return res.status(404).json({ error: 'ไม่พบข้อมูล' });
     res.json(rec);
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
 });
 
-app.delete('/api/inspections/:id', async (req, res) => {
+app.delete('/api/inspections/:id', requirePin, async (req, res) => {
   try {
     const rec = await Inspection.findOne({ id: req.params.id });
     if (rec) {
@@ -591,11 +676,10 @@ app.post('/api/analyze', upload.array('photos', 10), async (req, res) => {
   const uploadedFiles = req.files || [];
   try {
     // PIN check — ยกเว้น autoMode (score < 80% ระบบรันอัตโนมัติ ไม่ต้องใส่ PIN)
-    const settings  = await getSettings();
-    const adminPin  = settings.adminPin || process.env.ADMIN_PIN || '';
     const isAuto    = req.body.autoMode === 'true';
-    if (adminPin && !isAuto && (req.body.adminPin || '') !== adminPin) {
-      return res.status(403).json({ error: 'PIN ไม่ถูกต้อง — เฉพาะวิศวกรเท่านั้นที่วิเคราะห์ได้' });
+    if (!isAuto) {
+      const r = await checkPin(req);
+      if (r !== 'ok') return pinError(res, r);
     }
 
     const client   = await getAnthropic();
@@ -669,13 +753,10 @@ app.post('/api/line/send', async (req, res) => {
   try {
     const settings  = await getSettings();
 
-    // ── PIN verification (เมื่อ score < 80 ระบบจะส่ง pin มาด้วย) ────────────
-    const adminPin = settings.adminPin || process.env.ADMIN_PIN || '';
-    if (req.body.requirePin) {
-      if (!adminPin) return res.status(400).json({ error: 'ยังไม่ได้ตั้งค่า PIN ใน Settings' });
-      if ((req.body.pin || '') !== adminPin) {
-        return res.status(403).json({ error: 'PIN ไม่ถูกต้อง', wrongPin: true });
-      }
+    // ── PIN: when the page asks for it, or when sending with a custom token / target (could message anyone)
+    if (req.body.requirePin || req.body.token || req.body.targetId) {
+      const r = await checkPin(req);
+      if (r !== 'ok') return pinError(res, r);
     }
 
     const token     = req.body.token    || settings.lineChannelToken || process.env.LINE_CHANNEL_TOKEN;
@@ -728,7 +809,7 @@ app.post('/webhook/line', (req, res) => {
     console.log(`[LINE Webhook] ${entry.type} ID: ${entry.id} | "${entry.text}"`);
   });
 });
-app.get('/api/line/discovered-ids', (req, res) => res.json(lastLineEvents));
+app.get('/api/line/discovered-ids', requirePin, (req, res) => res.json(lastLineEvents));
 
 // ── Dashboard ─────────────────────────────────────────────────────────────────
 app.get('/api/dashboard', async (req, res) => {

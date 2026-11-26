@@ -853,6 +853,7 @@ function showView(name) {
   if (App.currentView === 'settings' && name !== 'settings') {
     App._settingsUnlocked = false;
     clearTimeout(App._settingsLockTimer);
+    forgetPin();
   }
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
   document.getElementById('view-' + name).classList.add('active');
@@ -875,11 +876,11 @@ function showView(name) {
       document.getElementById('settingsPinInput').value = '';
       document.getElementById('settingsPinError').textContent = '';
       setTimeout(() => document.getElementById('settingsPinInput').focus(), 100);
-      // ถ้ายังไม่มี settings → โหลดก่อน (เพื่อรู้ว่ามี PIN ไหม)
+      // ถ้ายังไม่มี settings → โหลดก่อน (เพื่อรู้ว่ามี PIN ไหม — เซิร์ฟเวอร์บอกแค่ hasPin ไม่ส่ง PIN จริงมา)
       if (!App.settings || !App.settings.key) {
         fetch('/api/settings').then(r => r.json()).then(s => {
           App.settings = s;
-          if (!s.adminPin) {
+          if (!s.hasPin) {
             // ไม่มี PIN → เข้าได้เลย
             App._settingsUnlocked = true;
             overlay.style.display = 'none';
@@ -910,13 +911,15 @@ async function confirmSettingsPin() {
   if (!App.settings || !App.settings.key) {
     try { App.settings = await fetch('/api/settings').then(r => r.json()); } catch {}
   }
-  const correct = (App.settings || {}).adminPin || '';
-  if (!correct) { // ยังไม่มี PIN — เปิดได้เลย
+  if (!(App.settings || {}).hasPin) { // ยังไม่มี PIN — เปิดได้เลย
     App._settingsUnlocked = true;
     document.getElementById('settingsPinOverlay').style.display = 'none';
     loadSettings(); return;
   }
-  if (input === correct) {
+  // ให้เซิร์ฟเวอร์ตรวจ PIN (หน้าเว็บไม่รู้ PIN จริง)
+  const v = await verifyPin(input);
+  if (v.ok) {
+    rememberPin(input);
     App._settingsUnlocked = true;
     document.getElementById('settingsPinOverlay').style.display = 'none';
     loadSettings();
@@ -924,10 +927,41 @@ async function confirmSettingsPin() {
     clearTimeout(App._settingsLockTimer);
     App._settingsLockTimer = setTimeout(() => { App._settingsUnlocked = false; }, 10 * 60 * 1000);
   } else {
-    document.getElementById('settingsPinError').textContent = '❌ PIN ไม่ถูกต้อง กรุณาลองใหม่';
+    document.getElementById('settingsPinError').textContent = '❌ ' + (v.error || 'PIN ไม่ถูกต้อง กรุณาลองใหม่');
     document.getElementById('settingsPinInput').value = '';
     document.getElementById('settingsPinInput').focus();
   }
+}
+
+// ═══════════════════ PIN (ตรวจที่เซิร์ฟเวอร์เท่านั้น) ═══════════════════
+// เก็บ PIN ที่ผู้ใช้พิมพ์ไว้ในหน่วยความจำของแท็บนี้ 10 นาที เพื่อแนบไปกับคำสั่งที่ต้องใช้ PIN
+function rememberPin(pin) {
+  App._pin = pin;
+  clearTimeout(App._pinTimer);
+  App._pinTimer = setTimeout(forgetPin, 10 * 60 * 1000);
+}
+function forgetPin() {
+  App._pin = null;
+  clearTimeout(App._pinTimer);
+}
+function pinHeaders() {
+  return App._pin ? { 'X-Admin-Pin': App._pin } : {};
+}
+async function verifyPin(pin) {
+  try {
+    const r = await fetch('/api/pin/verify', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Admin-Pin': pin } });
+    const d = await r.json().catch(() => ({}));
+    return { ok: r.ok, error: d.error };
+  } catch (e) { return { ok: false, error: e.message }; }
+}
+/** ถาม PIN แล้วให้เซิร์ฟเวอร์ตรวจ คืน true ถ้าถูก */
+async function askPin(msg) {
+  const pin = prompt(msg || '🔒 ใส่ PIN วิศวกร');
+  if (pin === null || !pin.trim()) return false;
+  const v = await verifyPin(pin.trim());
+  if (!v.ok) { toast(v.error || 'PIN ไม่ถูกต้อง', 'err'); return false; }
+  rememberPin(pin.trim());
+  return true;
 }
 
 // ═══════════════════ TOAST ═══════════════════
@@ -984,11 +1018,17 @@ async function exportExcel() {
 }
 
 // ═══════════════════ API HELPERS ═══════════════════
-async function api(method, path, body) {
-  const opts = { method, headers: { 'Content-Type': 'application/json' } };
+async function api(method, path, body, _retried) {
+  const opts = { method, headers: { 'Content-Type': 'application/json', ...pinHeaders() } };
   if (body) opts.body = JSON.stringify(body);
   const r = await fetch(path, opts);
   const data = await r.json();
+  // คำสั่งที่ต้องใช้ PIN วิศวกร: ถาม PIN แล้วลองใหม่ครั้งเดียว
+  if (r.status === 403 && data.wrongPin && !_retried) {
+    forgetPin();
+    if (await askPin('🔒 คำสั่งนี้ต้องใช้ PIN วิศวกร')) return api(method, path, body, true);
+    throw new Error('ยกเลิก — ต้องใช้ PIN วิศวกร');
+  }
   if (!r.ok) throw new Error(data.error || 'เกิดข้อผิดพลาด');
   return data;
 }
@@ -1434,10 +1474,8 @@ async function runAnalysis(autoMode = false) {
   const settings = App.settings || {};
   // autoMode (score < 80%) → ไม่ต้องใส่ PIN เลย ระบบส่ง flag ไปแทน
   // manual mode → ถ้ามี PIN ให้ถามผู้ใช้
-  if (!autoMode && settings.adminPin) {
-    const pin = prompt('🔒 ใส่ PIN วิศวกร เพื่อวิเคราะห์ด้วย AI:');
-    if (pin === null) return;
-    if (pin !== settings.adminPin) { toast('PIN ไม่ถูกต้อง', 'err'); return; }
+  if (!autoMode && settings.hasPin && !App._pin) {
+    if (!(await askPin('🔒 ใส่ PIN วิศวกร เพื่อวิเคราะห์ด้วย AI:'))) return;
   }
 
   const f = App.form;
@@ -1471,12 +1509,11 @@ async function runAnalysis(autoMode = false) {
     }));
     if (autoMode) {
       fd.append('autoMode', 'true'); // score < 80% → ไม่ต้องการ PIN
-    } else if (settings.adminPin) {
-      fd.append('adminPin', settings.adminPin);
     }
     f.photos.forEach(photo => fd.append('photos', photo));
 
-    const res = await fetch('/api/analyze', { method: 'POST', body: fd });
+    // PIN ส่งทาง header ให้เซิร์ฟเวอร์ตรวจ (หน้าเว็บไม่รู้ PIN จริงแล้ว)
+    const res = await fetch('/api/analyze', { method: 'POST', body: fd, headers: pinHeaders() });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error);
 
@@ -1522,14 +1559,16 @@ async function confirmPin() {
     document.getElementById('pinError').style.display = 'block';
     return;
   }
-  const settings = App.settings || {};
-  const adminPin = settings.adminPin || '';
-  if (adminPin && pin !== adminPin) {
-    document.getElementById('pinError').textContent = '❌ PIN ไม่ถูกต้อง กรุณาลองใหม่';
-    document.getElementById('pinError').style.display = 'block';
-    document.getElementById('pinInput').value = '';
-    document.getElementById('pinInput').focus();
-    return;
+  if ((App.settings || {}).hasPin) {
+    const v = await verifyPin(pin);
+    if (!v.ok) {
+      document.getElementById('pinError').textContent = '❌ ' + (v.error || 'PIN ไม่ถูกต้อง กรุณาลองใหม่');
+      document.getElementById('pinError').style.display = 'block';
+      document.getElementById('pinInput').value = '';
+      document.getElementById('pinInput').focus();
+      return;
+    }
+    rememberPin(pin);
   }
   // PIN ถูก → ปิด modal แล้วรัน AI analysis (autoMode) → LINE จะส่งอัตโนมัติหลังจากนั้น
   closePinModal();
@@ -1907,7 +1946,11 @@ async function importCSV(e) {
   const fd = new FormData();
   fd.append('csv', file);
   try {
-    const r = await fetch('/api/master/import', { method: 'POST', body: fd });
+    if ((App.settings || {}).hasPin && !App._pin && !(await askPin('🔒 Import ข้อมูลป้ายต้องใช้ PIN วิศวกร'))) {
+      e.target.value = '';
+      return;
+    }
+    const r = await fetch('/api/master/import', { method: 'POST', body: fd, headers: pinHeaders() });
     const d = await r.json();
     if (!r.ok) throw new Error(d.error);
     await loadMaster();
@@ -1947,7 +1990,12 @@ async function loadSettings() {
     document.getElementById('sEngLicense').value = s.engineerLicense || '';
     document.getElementById('sCompany').value = s.companyName || '';
     document.getElementById('sSheetsUrl').value = s.sheetsUrl || '';
-    document.getElementById('sLineToken').value = s.lineChannelToken || '';
+    // เซิร์ฟเวอร์ไม่ส่ง token/คีย์/PIN จริงมาแล้ว — ช่องว่าง = ใช้ค่าเดิม พิมพ์ใหม่เฉพาะเมื่อจะเปลี่ยน
+    document.getElementById('sLineToken').value = '';
+    document.getElementById('sLineToken').placeholder = s.hasLineToken ? '•••• ตั้งไว้แล้ว — เว้นว่างเพื่อใช้ค่าเดิม' : 'xxxx...xxxx (Long-lived token)';
+    document.getElementById('sAnthropicKey').placeholder = s.hasAnthropicKey ? '•••• ตั้งไว้แล้ว — เว้นว่างเพื่อใช้ค่าเดิม' : 'sk-ant-api03-...';
+    document.getElementById('sAdminPin').value = '';
+    document.getElementById('sAdminPin').placeholder = s.hasPin ? '•••• ตั้งไว้แล้ว — พิมพ์ใหม่เพื่อเปลี่ยน PIN' : 'ตั้ง PIN เพื่อป้องกัน Settings และ AI';
     document.getElementById('sLineTargetId').value = s.lineTargetId || '';
     const m = s.columnMapping || {};
     const cmDefaults = { codeId:1, name:2, mediaType:0, region:4, road:3, phase:-1, lat:5, lng:6 };
@@ -2014,10 +2062,13 @@ async function saveSettings() {
   };
   if (!body.anthropicKey) delete body.anthropicKey;
   if (!body.adminPin) delete body.adminPin;
+  if (!body.lineChannelToken) delete body.lineChannelToken;
   try {
-    await api('PUT', '/api/settings', body);
+    const r = await api('PUT', '/api/settings', body);
+    if (r.settings) App.settings = r.settings;
+    if (body.adminPin) rememberPin(body.adminPin); // เปลี่ยน PIN แล้ว ใช้ PIN ใหม่ต่อได้เลย
     toast('บันทึก Settings สำเร็จ', 'ok');
-    document.getElementById('sAnthropicKey').value = '';
+    loadSettings();
   } catch (e) { toast(e.message, 'err'); }
 }
 
@@ -2027,12 +2078,12 @@ function togglePwd(id) {
 }
 
 async function testLine() {
-  const token = document.getElementById('sLineToken').value;
-  const targetId = document.getElementById('sLineTargetId').value;
+  const token = document.getElementById('sLineToken').value.trim() || undefined; // ว่าง = ใช้ token ที่บันทึกไว้
+  const targetId = document.getElementById('sLineTargetId').value.trim() || undefined;
   try {
     await api('POST', '/api/line/send', {
       message: '🔔 Audit-EE ทดสอบการแจ้งเตือน\nระบบพร้อมใช้งาน ✅\nPlan B Media — LINE Messaging API',
-      token, targetId
+      token, targetId, requirePin: true
     });
     toast('ส่ง LINE สำเร็จ ✅', 'ok');
   } catch (e) { toast(e.message, 'err'); }
@@ -2113,7 +2164,6 @@ async function openDetail(id) {
 }
 
 function approveInspection(id, decision) {
-  const adminPin = (App.settings || {}).adminPin || '';
   const color    = decision === 'APPROVED' ? '#10b981' : '#ef4444';
   const icon     = decision === 'APPROVED' ? '✅' : '❌';
 
@@ -2135,23 +2185,28 @@ function approveInspection(id, decision) {
       <div style="display:flex;gap:8px">
         <button class="btn btn-ghost" style="flex:1" onclick="document.getElementById('approvePin').remove()">ยกเลิก</button>
         <button class="btn" style="flex:1;background:${color};color:#fff;border:none;border-radius:8px;padding:10px"
-          onclick="doApprove('${id}','${decision}','${adminPin}')">ยืนยัน</button>
+          onclick="doApprove('${id}','${decision}')">ยืนยัน</button>
       </div>
     </div>`;
   document.body.appendChild(overlay);
   setTimeout(() => document.getElementById('approvePinInput')?.focus(), 100);
   document.getElementById('approvePinInput').addEventListener('keydown', e => {
-    if (e.key === 'Enter') doApprove(id, decision, adminPin);
+    if (e.key === 'Enter') doApprove(id, decision);
   });
 }
 
-async function doApprove(id, decision, adminPin) {
+async function doApprove(id, decision) {
   const input = (document.getElementById('approvePinInput')?.value || '').trim();
-  if (adminPin && input !== adminPin) {
-    document.getElementById('approvePinError').textContent = '❌ PIN ไม่ถูกต้อง';
-    document.getElementById('approvePinInput').value = '';
-    document.getElementById('approvePinInput').focus();
-    return;
+  // เซิร์ฟเวอร์เป็นคนตรวจ PIN — ผิดก็ให้ลองใหม่ในหน้าต่างเดิม
+  if ((App.settings || {}).hasPin) {
+    const v = await verifyPin(input);
+    if (!v.ok) {
+      document.getElementById('approvePinError').textContent = '❌ ' + (v.error || 'PIN ไม่ถูกต้อง');
+      document.getElementById('approvePinInput').value = '';
+      document.getElementById('approvePinInput').focus();
+      return;
+    }
+    rememberPin(input);
   }
   try {
     document.getElementById('approvePin')?.remove();
